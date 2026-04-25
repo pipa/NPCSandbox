@@ -225,7 +225,28 @@ class GameScene: SKScene {
             mapRows: mapRows
         )
 
-        npcs = [baker, keeper]
+        let farmer = NPC(
+            name: "Gareth",
+            role: "the village farmer; tends the wheat fields, hauls grain to market, brings produce to the bakery and tavern",
+            tileID: CharTile.villager2,
+            startPos: MapLocation.farmhouseDoor,
+            schedule: [
+                ScheduleEntry(hour: 6, minute: 0, location: MapLocation.farmhouseDoor, activity: "Waking up"),
+                ScheduleEntry(hour: 6, minute: 30, location: MapLocation.townSquare, activity: "Morning walk"),
+                ScheduleEntry(hour: 7, minute: 30, location: MapLocation.farmField, activity: "Working the fields"),
+                ScheduleEntry(hour: 9, minute: 0, location: MapLocation.bakeryDoor, activity: "Delivering grain"),
+                ScheduleEntry(hour: 10, minute: 30, location: MapLocation.farmField, activity: "Working the fields"),
+                ScheduleEntry(hour: 13, minute: 0, location: MapLocation.tavernDoor, activity: "Lunch"),
+                ScheduleEntry(hour: 14, minute: 30, location: MapLocation.farmField, activity: "Working the fields"),
+                ScheduleEntry(hour: 17, minute: 0, location: MapLocation.townSquare, activity: "Evening walk"),
+                ScheduleEntry(hour: 19, minute: 0, location: MapLocation.farmhouseDoor, activity: "Home"),
+            ],
+            sociability: 0.6,
+            tileSize: tileSize,
+            mapRows: mapRows
+        )
+
+        npcs = [baker, keeper, farmer]
         for npc in npcs {
             addChild(npc.sprite)
         }
