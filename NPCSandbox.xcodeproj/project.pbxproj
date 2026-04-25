@@ -6,9 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		974EF4D82F9C0D5F00CE08F4 /* CLAUDE.md in Resources */ = {isa = PBXBuildFile; fileRef = 974EF4D72F9C0D5B00CE08F4 /* CLAUDE.md */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		974EF4AA2F9C0C4C00CE08F4 /* NPCSandbox.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NPCSandbox.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		974EF4BB2F9C0C4C00CE08F4 /* NPCSandbox.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NPCSandbox.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		974EF4D72F9C0D5B00CE08F4 /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -17,8 +22,16 @@
 			membershipExceptions = (
 				Actions.sks,
 				Assets.xcassets,
+				GameClock.swift,
 				GameScene.sks,
 				GameScene.swift,
+				KenneyLicense.txt,
+				MemoryStream.swift,
+				NPC.swift,
+				tilemap_packed.png,
+				TileReference.swift,
+				TinyDungeon.atlas,
+				TinyTown.atlas,
 			);
 			target = 974EF4A92F9C0C4C00CE08F4 /* NPCSandbox iOS */;
 		};
@@ -34,8 +47,16 @@
 			membershipExceptions = (
 				Actions.sks,
 				Assets.xcassets,
+				GameClock.swift,
 				GameScene.sks,
 				GameScene.swift,
+				KenneyLicense.txt,
+				MemoryStream.swift,
+				NPC.swift,
+				tilemap_packed.png,
+				TileReference.swift,
+				TinyDungeon.atlas,
+				TinyTown.atlas,
 			);
 			target = 974EF4BA2F9C0C4C00CE08F4 /* NPCSandbox macOS */;
 		};
@@ -87,6 +108,7 @@
 		974EF49C2F9C0C4B00CE08F4 = {
 			isa = PBXGroup;
 			children = (
+				974EF4D72F9C0D5B00CE08F4 /* CLAUDE.md */,
 				974EF4A12F9C0C4C00CE08F4 /* NPCSandbox Shared */,
 				974EF4AC2F9C0C4C00CE08F4 /* NPCSandbox iOS */,
 				974EF4BC2F9C0C4C00CE08F4 /* NPCSandbox macOS */,
@@ -193,6 +215,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				974EF4D82F9C0D5F00CE08F4 /* CLAUDE.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
