@@ -80,7 +80,8 @@ class NPC {
     private var interruptEndMinute: Int = 0
     private var chatCooldowns: [String: Int] = [:]
     private let chatCooldownMinutes = 120
-    private let chatDurationMinutes = 15
+    private let baseChatDurationMinutes = 15
+    private let perTurnChatDurationMinutes = 8
 
     init(name: String, role: String, tileID: Int, startPos: GridPosition, schedule: [ScheduleEntry],
          sociability: Double, tileSize: CGFloat, mapRows: Int) {
@@ -150,9 +151,9 @@ class NPC {
 
     // MARK: - Interrupts
 
-    func beginChat(with other: NPC, clock: GameClock) {
+    func beginChat(with other: NPC, clock: GameClock, turnCount: Int) {
         isInterrupted = true
-        interruptEndMinute = clock.totalMinutes + chatDurationMinutes
+        interruptEndMinute = clock.totalMinutes + baseChatDurationMinutes + turnCount * perTurnChatDurationMinutes
         chatCooldowns[other.name] = clock.totalMinutes
 
         let location = MapLocation.nearestName(to: gridPos)

@@ -311,9 +311,10 @@ class GameScene: SKScene {
                 let aScore = a.socialUtility(with: b, currentMinutes: now)
                 let bScore = b.socialUtility(with: a, currentMinutes: now)
                 if aScore > a.scheduleUtility && bScore > b.scheduleUtility {
-                    a.beginChat(with: b, clock: gameClock)
-                    b.beginChat(with: a, clock: gameClock)
-                    requestDialogue(speaker: a, listener: b)
+                    let turns = turnCount(for: a, b)
+                    a.beginChat(with: b, clock: gameClock, turnCount: turns)
+                    b.beginChat(with: a, clock: gameClock, turnCount: turns)
+                    requestDialogue(speaker: a, listener: b, turnCount: turns)
                 }
             }
         }
@@ -392,7 +393,15 @@ class GameScene: SKScene {
 
     // MARK: - Dialogue Generation
 
-    private func requestDialogue(speaker: NPC, listener: NPC) {
+    /// Average sociability maps to 3-5 turns. Pairs of low-sociability NPCs chat briefly;
+    /// chatty pairs linger.
+    private func turnCount(for a: NPC, _ b: NPC) -> Int {
+        let avg = (a.sociability + b.sociability) / 2
+        let normalized = min(max((avg - 0.5) / 0.4, 0), 1)
+        return 3 + Int((normalized * 2).rounded())
+    }
+
+    private func requestDialogue(speaker: NPC, listener: NPC, turnCount: Int) {
         waitingForDialogue = true
         let speakerName = speaker.name
         let speakerRole = speaker.role
@@ -402,16 +411,12 @@ class GameScene: SKScene {
         let speakerActivity = speaker.currentActivity
         let listenerActivity = listener.currentActivity
         let speakerHistory = speaker.memory.recentChatHistory(with: listenerName)
-        let listenerHistory = listener.memory.recentChatHistory(with: speakerName)
         let priorChats = speaker.memory.chatSessionCount(with: listenerName)
 
         buildChatBox(leftName: speakerName, rightName: listenerName)
         showThinking(side: "leftText")
 
         Task.detached { [weak self, weak speaker, weak listener] in
-            // Guarantee waitingForDialogue resets on every exit path so a
-            // throw, cancellation, or early return can never leave the world
-            // frozen waiting for an LLM that already failed.
             defer {
                 Task { @MainActor [weak self] in
                     self?.dismissDialog()
@@ -420,7 +425,8 @@ class GameScene: SKScene {
             }
 
             do {
-                let speakerLine = await NPCBrain.generateDialogue(
+                // Turn 1 — speaker opens.
+                let openingLine = await NPCBrain.generateDialogue(
                     speaker: speakerName,
                     speakerRole: speakerRole,
                     listener: listenerName,
@@ -431,35 +437,65 @@ class GameScene: SKScene {
                     chatHistory: speakerHistory
                 ) ?? "Good day!"
 
+                var transcript: [(speaker: String, line: String)] = [(speakerName, openingLine)]
+
                 await MainActor.run { [weak self] in
-                    self?.setChatText(side: "leftText", text: speakerLine)
-                    self?.showThinking(side: "rightText")
+                    self?.setChatText(side: "leftText", text: openingLine)
+                    if turnCount > 1 { self?.showThinking(side: "rightText") }
                 }
 
-                let listenerLine = await NPCBrain.generateResponse(
-                    responder: listenerName,
-                    responderRole: listenerRole,
-                    to: speakerName,
-                    speakerRole: speakerRole,
-                    location: location,
-                    responderActivity: listenerActivity,
-                    previousLine: speakerLine,
-                    chatHistory: listenerHistory
-                ) ?? "Well met!"
+                // Turns 2…N — alternate sides, each replying to the previous line.
+                for turnIndex in 1..<turnCount {
+                    if turnIndex > 1 {
+                        try await Task.sleep(for: .seconds(2))
+                    }
 
+                    let responderIsListener = (turnIndex % 2 == 1)
+                    let responderName = responderIsListener ? listenerName : speakerName
+                    let responderRole = responderIsListener ? listenerRole : speakerRole
+                    let otherName = responderIsListener ? speakerName : listenerName
+                    let otherRole = responderIsListener ? speakerRole : listenerRole
+                    let responderActivity = responderIsListener ? listenerActivity : speakerActivity
+                    let side = responderIsListener ? "rightText" : "leftText"
+                    let nextSide = responderIsListener ? "leftText" : "rightText"
+                    let isFinal = (turnIndex == turnCount - 1)
+
+                    let inSessionHistory = transcript.map { "\($0.speaker): \"\($0.line)\"" }
+                    let prevLine = transcript.last!.line
+
+                    let line = await NPCBrain.generateResponse(
+                        responder: responderName,
+                        responderRole: responderRole,
+                        to: otherName,
+                        speakerRole: otherRole,
+                        location: location,
+                        responderActivity: responderActivity,
+                        previousLine: prevLine,
+                        chatHistory: inSessionHistory,
+                        isFinal: isFinal
+                    ) ?? "..."
+
+                    transcript.append((responderName, line))
+
+                    await MainActor.run { [weak self] in
+                        self?.setChatText(side: side, text: line)
+                        if !isFinal { self?.showThinking(side: nextSide) }
+                    }
+                }
+
+                // Flush the entire exchange to both NPCs' memory streams in one shot.
+                let finalTranscript = transcript
                 await MainActor.run { [weak self, weak speaker, weak listener] in
                     guard let self else { return }
-                    self.setChatText(side: "rightText", text: listenerLine)
                     let timeStr = self.gameClock.timeString
-                    print("[\(timeStr)] [DLG] \(speakerName): \"\(speakerLine)\"")
-                    print("[\(timeStr)] [DLG] \(listenerName): \"\(listenerLine)\"")
-                    speaker?.memory.logDialogue(speaker: speakerName, partner: listenerName, line: speakerLine, at: timeStr)
-                    speaker?.memory.logDialogue(speaker: listenerName, partner: listenerName, line: listenerLine, at: timeStr)
-                    listener?.memory.logDialogue(speaker: speakerName, partner: speakerName, line: speakerLine, at: timeStr)
-                    listener?.memory.logDialogue(speaker: listenerName, partner: speakerName, line: listenerLine, at: timeStr)
+                    for entry in finalTranscript {
+                        print("[\(timeStr)] [DLG] \(entry.speaker): \"\(entry.line)\"")
+                        speaker?.memory.logDialogue(speaker: entry.speaker, partner: listenerName, line: entry.line, at: timeStr)
+                        listener?.memory.logDialogue(speaker: entry.speaker, partner: speakerName, line: entry.line, at: timeStr)
+                    }
                 }
 
-                try await Task.sleep(for: .seconds(4))
+                try await Task.sleep(for: .seconds(3))
             } catch {
                 print("[Dialogue] cancelled or failed: \(error)")
             }

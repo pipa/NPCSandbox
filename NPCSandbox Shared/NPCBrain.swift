@@ -190,7 +190,8 @@ enum NPCBrain {
         location: String,
         responderActivity: String,
         previousLine: String,
-        chatHistory: [String]
+        chatHistory: [String],
+        isFinal: Bool = false
     ) async -> String? {
         guard isAvailable else { return nil }
 
@@ -201,16 +202,20 @@ enum NPCBrain {
             let joined = chatHistory.joined(separator: "\n")
             historyBlock = """
 
-                Earlier today you two spoke:
+                Earlier in this exchange:
                 \(joined)
                 """
         }
+
+        let closingNote = isFinal
+            ? " This is your closing line — wrap up naturally and part ways. Don't ask a new question."
+            : ""
 
         let prompt = """
             You're near the \(location). You've been \(responderActivity.lowercased()).
             \(speaker) (\(speakerRole)) just said to you: "\(previousLine)"\(historyBlock)
 
-            Reply naturally in one short line, under 20 words. React to what they actually said. Only output the dialogue line.
+            Reply naturally in one short line, under 20 words. React to what they actually said.\(closingNote) Only output the dialogue line.
             """
 
         return await respond(npcName: responder, role: responderRole, label: "\(responder) response", prompt: prompt)
