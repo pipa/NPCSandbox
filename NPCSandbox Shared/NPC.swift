@@ -77,11 +77,8 @@ class NPC {
     private(set) var currentActivity: String = ""
     private(set) var isWalking = false
     private(set) var isInterrupted = false
-    private var interruptEndMinute: Int = 0
     private var chatCooldowns: [String: Int] = [:]
     private let chatCooldownMinutes = 120
-    private let baseChatDurationMinutes = 15
-    private let perTurnChatDurationMinutes = 8
 
     init(name: String, role: String, tileID: Int, startPos: GridPosition, schedule: [ScheduleEntry],
          sociability: Double, tileSize: CGFloat, mapRows: Int) {
@@ -151,9 +148,8 @@ class NPC {
 
     // MARK: - Interrupts
 
-    func beginChat(with other: NPC, clock: GameClock, turnCount: Int) {
+    func beginChat(with other: NPC, clock: GameClock) {
         isInterrupted = true
-        interruptEndMinute = clock.totalMinutes + baseChatDurationMinutes + turnCount * perTurnChatDurationMinutes
         chatCooldowns[other.name] = clock.totalMinutes
 
         let location = MapLocation.nearestName(to: gridPos)
@@ -163,19 +159,16 @@ class NPC {
         updateLabel()
     }
 
+    func endChat(clock: GameClock) {
+        guard isInterrupted else { return }
+        isInterrupted = false
+        restoreScheduleActivity(clock: clock)
+    }
+
     // MARK: - Schedule
 
     func checkSchedule(clock: GameClock, navGraph: GKGridGraph<GKGridGraphNode>) {
-        if isInterrupted {
-            if clock.totalMinutes >= interruptEndMinute {
-                isInterrupted = false
-                restoreScheduleActivity(clock: clock)
-            } else {
-                return
-            }
-        }
-
-        guard !isWalking else { return }
+        guard !isInterrupted, !isWalking else { return }
 
         let now = clock.totalMinutes
 

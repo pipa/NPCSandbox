@@ -296,7 +296,9 @@ class GameScene: SKScene {
             }
         }
 
-        // Social interrupts (symmetric — evaluate each pair once)
+        // Collect all socially eligible pairs, then pick one at random so
+        // no fixed iteration order can lock the third NPC out of conversations.
+        var eligiblePairs: [(NPC, NPC)] = []
         for i in 0..<npcs.count {
             for j in (i + 1)..<npcs.count {
                 let a = npcs[i]
@@ -311,12 +313,16 @@ class GameScene: SKScene {
                 let aScore = a.socialUtility(with: b, currentMinutes: now)
                 let bScore = b.socialUtility(with: a, currentMinutes: now)
                 if aScore > a.scheduleUtility && bScore > b.scheduleUtility {
-                    let turns = turnCount(for: a, b)
-                    a.beginChat(with: b, clock: gameClock, turnCount: turns)
-                    b.beginChat(with: a, clock: gameClock, turnCount: turns)
-                    requestDialogue(speaker: a, listener: b, turnCount: turns)
+                    eligiblePairs.append((a, b))
                 }
             }
+        }
+
+        if let (a, b) = eligiblePairs.randomElement() {
+            let turns = turnCount(for: a, b)
+            a.beginChat(with: b, clock: gameClock)
+            b.beginChat(with: a, clock: gameClock)
+            requestDialogue(speaker: a, listener: b, turnCount: turns)
         }
     }
 
@@ -418,9 +424,13 @@ class GameScene: SKScene {
 
         Task.detached { [weak self, weak speaker, weak listener] in
             defer {
-                Task { @MainActor [weak self] in
+                Task { @MainActor [weak self, weak speaker, weak listener] in
                     self?.dismissDialog()
                     self?.waitingForDialogue = false
+                    if let self {
+                        speaker?.endChat(clock: self.gameClock)
+                        listener?.endChat(clock: self.gameClock)
+                    }
                 }
             }
 
