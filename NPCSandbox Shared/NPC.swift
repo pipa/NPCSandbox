@@ -46,12 +46,30 @@ struct ScheduleEntry {
 
 class NPC {
     let name: String
+    let role: String
     let sprite: SKSpriteNode
     let label: SKLabelNode
     let memory: MemoryStream
     let sociability: Double
     var gridPos: GridPosition
     let schedule: [ScheduleEntry]
+
+    var scheduleDescription: String {
+        schedule.map { "\($0.activity) at \(String(format: "%02d:%02d", $0.hour, $0.minute))" }
+            .joined(separator: ", ")
+    }
+
+    var dialogSummary: String {
+        let recent = memory.recentEntries
+        if recent.isEmpty {
+            if let lastDay = memory.dailySummaries.last {
+                let lines = lastDay.bullets.prefix(5).joined(separator: "\n")
+                return "Yesterday:\n\(lines)"
+            }
+            return "Nothing notable yet."
+        }
+        return recent.suffix(6).map { "[\($0.gameTime)] \($0.text)" }.joined(separator: "\n")
+    }
 
     private let tileSize: CGFloat
     private let mapRows: Int
@@ -64,9 +82,10 @@ class NPC {
     private let chatCooldownMinutes = 120
     private let chatDurationMinutes = 15
 
-    init(name: String, tileID: Int, startPos: GridPosition, schedule: [ScheduleEntry],
+    init(name: String, role: String, tileID: Int, startPos: GridPosition, schedule: [ScheduleEntry],
          sociability: Double, tileSize: CGFloat, mapRows: Int) {
         self.name = name
+        self.role = role
         self.gridPos = startPos
         self.schedule = schedule.sorted { $0.totalMinutes < $1.totalMinutes }
         self.sociability = sociability
@@ -96,6 +115,16 @@ class NPC {
         label.position = CGPoint(x: 0, y: tileSize * 0.6)
         label.zPosition = 11
         sprite.addChild(label)
+    }
+
+    // MARK: - Day Reset
+
+    func resetForNewDay() {
+        lastTriggeredMinute = -1
+        chatCooldowns.removeAll()
+        isInterrupted = false
+        currentActivity = ""
+        updateLabel()
     }
 
     // MARK: - Utility Scoring

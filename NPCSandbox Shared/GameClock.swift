@@ -3,12 +3,13 @@ import Foundation
 class GameClock {
     private(set) var hour: Int
     private(set) var minute: Int
+    private(set) var day: Int = 1
     var minutesPerSecond: Double = 30.0
 
     private var accumulator: TimeInterval = 0
 
     var timeString: String {
-        String(format: "%02d:%02d", hour, minute)
+        String(format: "Day %d  %02d:%02d", day, hour, minute)
     }
 
     var totalMinutes: Int {
@@ -32,6 +33,7 @@ class GameClock {
                 hour += 1
                 if hour >= 24 {
                     hour = 0
+                    day += 1
                 }
             }
             ticked = true

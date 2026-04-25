@@ -28,6 +28,7 @@
 				KenneyLicense.txt,
 				MemoryStream.swift,
 				NPC.swift,
+				NPCBrain.swift,
 				tilemap_packed.png,
 				TileReference.swift,
 				TinyDungeon.atlas,
@@ -53,6 +54,7 @@
 				KenneyLicense.txt,
 				MemoryStream.swift,
 				NPC.swift,
+				NPCBrain.swift,
 				tilemap_packed.png,
 				TileReference.swift,
 				TinyDungeon.atlas,
@@ -321,7 +323,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -354,7 +356,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
