@@ -165,6 +165,18 @@ class NPC {
         restoreScheduleActivity(clock: clock)
     }
 
+    /// Human-friendly description of how long the NPC has been on their current
+    /// schedule entry. Used to ground dialogue prompts.
+    func activityDurationDescription(currentMinutes: Int) -> String {
+        let started = max(lastTriggeredMinute, 0)
+        let mins = currentMinutes - started
+        if mins < 5 { return "just now" }
+        if mins < 30 { return "for about \(mins) minutes" }
+        if mins < 90 { return "for the past hour or so" }
+        if mins < 240 { return "for several hours" }
+        return "since this morning"
+    }
+
     // MARK: - Schedule
 
     func checkSchedule(clock: GameClock, navGraph: GKGridGraph<GKGridGraphNode>) {

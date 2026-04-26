@@ -153,11 +153,18 @@ enum NPCBrain {
         listener: String,
         listenerRole: String,
         location: String,
+        timeOfDay: String,
         speakerActivity: String,
+        speakerActivityDuration: String,
+        speakerObservations: [String],
         priorChatsToday: Int,
         chatHistory: [String]
     ) async -> String? {
         guard isAvailable else { return nil }
+
+        let observationsBlock = speakerObservations.isEmpty
+            ? ""
+            : "\nEarlier today you noticed:\n" + speakerObservations.joined(separator: "\n")
 
         let historyBlock: String
         if priorChatsToday == 0 {
@@ -173,12 +180,12 @@ enum NPCBrain {
         }
 
         let prompt = """
-            You're near the \(location), and you've just bumped into \(listener) (\(listenerRole)).
-            You've been \(speakerActivity.lowercased()).
+            It's \(timeOfDay). You're near the \(location); you've been \(speakerActivity.lowercased()) \(speakerActivityDuration).
+            \(listener) (\(listenerRole)) just walked up.\(observationsBlock)
 
             \(historyBlock)
 
-            Speak one short line, under 20 words. Reference your own work or the moment. Only output the dialogue line.
+            Speak one short line, under 20 words. Ground it in what you're actually doing right now or something you saw earlier — not generic gossip. Only output the dialogue line.
             """
 
         return await respond(npcName: speaker, role: speakerRole, label: "\(speaker) dialogue", prompt: prompt)
@@ -190,12 +197,19 @@ enum NPCBrain {
         to speaker: String,
         speakerRole: String,
         location: String,
+        timeOfDay: String,
         responderActivity: String,
+        responderActivityDuration: String,
+        responderObservations: [String],
         previousLine: String,
         chatHistory: [String],
         isFinal: Bool = false
     ) async -> String? {
         guard isAvailable else { return nil }
+
+        let observationsBlock = responderObservations.isEmpty
+            ? ""
+            : "\nEarlier today you noticed:\n" + responderObservations.joined(separator: "\n")
 
         let historyBlock: String
         if chatHistory.isEmpty {
@@ -214,10 +228,10 @@ enum NPCBrain {
             : ""
 
         let prompt = """
-            You're near the \(location). You've been \(responderActivity.lowercased()).
-            \(speaker) (\(speakerRole)) just said to you: "\(previousLine)"\(historyBlock)
+            It's \(timeOfDay). You're near the \(location); you've been \(responderActivity.lowercased()) \(responderActivityDuration).
+            \(speaker) (\(speakerRole)) just said to you: "\(previousLine)"\(observationsBlock)\(historyBlock)
 
-            Reply naturally in one short line, under 20 words. React to what they actually said.\(closingNote) Only output the dialogue line.
+            Reply in one short line, under 20 words. React to what they said and stay grounded in what you're doing right now.\(closingNote) Only output the dialogue line.
             """
 
         return await respond(npcName: responder, role: responderRole, label: "\(responder) response", prompt: prompt)

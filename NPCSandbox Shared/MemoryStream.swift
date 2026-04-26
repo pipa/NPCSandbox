@@ -70,6 +70,15 @@ class MemoryStream {
         return Array(lines.suffix(limit))
     }
 
+    /// Last few observations (what this NPC has noticed others doing today),
+    /// formatted oldest-first for use in dialogue prompts.
+    func recentObservations(limit: Int = 3) -> [String] {
+        let obs = entries
+            .filter { $0.kind == .observation }
+            .map { "[\($0.gameTime)] \($0.text)" }
+        return Array(obs.suffix(limit))
+    }
+
     /// How many distinct chat sessions today involved `partner` (counts speaker turns).
     func chatSessionCount(with partner: String) -> Int {
         entries.filter {

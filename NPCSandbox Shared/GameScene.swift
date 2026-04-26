@@ -320,8 +320,6 @@ class GameScene: SKScene {
 
         if let (a, b) = eligiblePairs.randomElement() {
             let turns = turnCount(for: a, b)
-            a.beginChat(with: b, clock: gameClock)
-            b.beginChat(with: a, clock: gameClock)
             requestDialogue(speaker: a, listener: b, turnCount: turns)
         }
     }
@@ -408,7 +406,9 @@ class GameScene: SKScene {
     }
 
     private func requestDialogue(speaker: NPC, listener: NPC, turnCount: Int) {
-        waitingForDialogue = true
+        // Capture grounding context BEFORE beginChat overwrites currentActivity
+        // with "Chatting" — we want the prior activity to feed prompts.
+        let now = gameClock.totalMinutes
         let speakerName = speaker.name
         let speakerRole = speaker.role
         let listenerName = listener.name
@@ -416,9 +416,18 @@ class GameScene: SKScene {
         let location = MapLocation.nearestName(to: speaker.gridPos)
         let speakerActivity = speaker.currentActivity
         let listenerActivity = listener.currentActivity
+        let speakerActivityDuration = speaker.activityDurationDescription(currentMinutes: now)
+        let listenerActivityDuration = listener.activityDurationDescription(currentMinutes: now)
+        let speakerObservations = speaker.memory.recentObservations()
+        let listenerObservations = listener.memory.recentObservations()
         let speakerHistory = speaker.memory.recentChatHistory(with: listenerName)
         let priorChats = speaker.memory.chatSessionCount(with: listenerName)
+        let timeOfDay = gameClock.timeString
 
+        speaker.beginChat(with: listener, clock: gameClock)
+        listener.beginChat(with: speaker, clock: gameClock)
+
+        waitingForDialogue = true
         buildChatBox(leftName: speakerName, rightName: listenerName)
         showThinking(side: "leftText")
 
@@ -442,7 +451,10 @@ class GameScene: SKScene {
                     listener: listenerName,
                     listenerRole: listenerRole,
                     location: location,
+                    timeOfDay: timeOfDay,
                     speakerActivity: speakerActivity,
+                    speakerActivityDuration: speakerActivityDuration,
+                    speakerObservations: speakerObservations,
                     priorChatsToday: priorChats,
                     chatHistory: speakerHistory
                 ) ?? "Good day!"
@@ -466,6 +478,8 @@ class GameScene: SKScene {
                     let otherName = responderIsListener ? speakerName : listenerName
                     let otherRole = responderIsListener ? speakerRole : listenerRole
                     let responderActivity = responderIsListener ? listenerActivity : speakerActivity
+                    let responderActivityDuration = responderIsListener ? listenerActivityDuration : speakerActivityDuration
+                    let responderObservations = responderIsListener ? listenerObservations : speakerObservations
                     let side = responderIsListener ? "rightText" : "leftText"
                     let nextSide = responderIsListener ? "leftText" : "rightText"
                     let isFinal = (turnIndex == turnCount - 1)
@@ -479,7 +493,10 @@ class GameScene: SKScene {
                         to: otherName,
                         speakerRole: otherRole,
                         location: location,
+                        timeOfDay: timeOfDay,
                         responderActivity: responderActivity,
+                        responderActivityDuration: responderActivityDuration,
+                        responderObservations: responderObservations,
                         previousLine: prevLine,
                         chatHistory: inSessionHistory,
                         isFinal: isFinal
