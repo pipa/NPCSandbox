@@ -31,7 +31,7 @@ enum NPCBrain {
             if let existing = slots[npcName], existing.callsSinceFresh < recreateAfterCalls {
                 return existing.session
             }
-            let fresh = makeSession(role: role)
+            let fresh = makeSession(npcName: npcName, role: role)
             fresh.prewarm()
             slots[npcName] = Slot(session: fresh, callsSinceFresh: 0)
             return fresh
@@ -51,10 +51,12 @@ enum NPCBrain {
             _ = session(for: npcName, role: role)
         }
 
-        private func makeSession(role: String) -> LanguageModelSession {
+        private func makeSession(npcName: String, role: String) -> LanguageModelSession {
             let instructions = Instructions(
-                "You are \(role) in a small medieval town. " +
-                "Stay strictly in character. Never break role, never narrate, never invent facts outside your trade. " +
+                "Your name is \(npcName). You are \(role) in a small medieval town. " +
+                "Always speak as \(npcName) and never confuse yourself with other characters. " +
+                "Stay strictly in your trade — never claim work that isn't yours. " +
+                "Never narrate, never invent facts outside your trade. " +
                 "When asked to speak, output only one short dialogue line — no quotes, no stage directions."
             )
             return LanguageModelSession(instructions: instructions)
