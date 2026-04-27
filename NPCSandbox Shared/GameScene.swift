@@ -192,7 +192,7 @@ class GameScene: SKScene {
     private func spawnNPCs() {
         let baker = NPC(
             name: "Elara",
-            role: "the village baker; runs the bakery, kneads dough before dawn, sells loaves and pastries to neighbors",
+            role: "the village baker",
             tileID: CharTile.villager1,
             startPos: MapLocation.bakeryDoor,
             schedule: [
@@ -214,7 +214,7 @@ class GameScene: SKScene {
 
         let keeper = NPC(
             name: "Mora",
-            role: "the tavern keeper; runs the tavern, pours ale, serves stew, hears every rumor in town",
+            role: "the tavern keeper",
             tileID: CharTile.villager3,
             startPos: MapLocation.tavernDoor,
             schedule: [
@@ -237,7 +237,7 @@ class GameScene: SKScene {
 
         let farmer = NPC(
             name: "Gareth",
-            role: "the village farmer; tends the wheat fields, hauls grain to market, brings produce to the bakery and tavern",
+            role: "the village farmer",
             tileID: CharTile.villager2,
             startPos: MapLocation.farmhouseDoor,
             schedule: [

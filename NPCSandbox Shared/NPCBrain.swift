@@ -6,7 +6,7 @@ enum NPCBrain {
     private static let dialogueOptions = GenerationOptions(
         sampling: .random(top: 40),
         temperature: 0.85,
-        maximumResponseTokens: 80
+        maximumResponseTokens: 40
     )
     private static let reflectionOptions = GenerationOptions(
         sampling: .greedy,
@@ -24,7 +24,7 @@ enum NPCBrain {
             var callsSinceFresh: Int
         }
 
-        private let recreateAfterCalls = 24
+        private let recreateAfterCalls = 8
         private var slots: [String: Slot] = [:]
 
         func session(for npcName: String, role: String) -> LanguageModelSession {
@@ -54,10 +54,10 @@ enum NPCBrain {
         private func makeSession(npcName: String, role: String) -> LanguageModelSession {
             let instructions = Instructions(
                 "Your name is \(npcName). You are \(role) in a small medieval town. " +
-                "Always speak as \(npcName) and never confuse yourself with other characters. " +
-                "Stay strictly in your trade — never claim work that isn't yours. " +
-                "Never narrate, never invent facts outside your trade. " +
-                "When asked to speak, output only one short dialogue line — no quotes, no stage directions."
+                "You speak ONLY as \(npcName). You never speak for or address yourself; " +
+                "you never write the other person's reply; you never produce more than one sentence at a time. " +
+                "Reply with a single short sentence — under 20 words, no quotes, no stage directions, " +
+                "no closing salutations. Stay grounded in what you are actually doing right now."
             )
             return LanguageModelSession(instructions: instructions)
         }
@@ -106,8 +106,23 @@ enum NPCBrain {
         String(format: "%.1fs", seconds)
     }
 
+    /// The model sometimes ignores "one sentence" and produces a full back-and-forth
+    /// in a single response. Take only the first non-empty line, then chop at the
+    /// first sentence boundary so we never emit the imagined reply.
     private static func cleanLine(_ raw: String) -> String {
-        raw.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
+        let firstLine = raw
+            .components(separatedBy: .newlines)
+            .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
+        var trimmed = firstLine.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
+
+        // Chop at the first sentence terminator so a stray "Good day, Gareth."
+        // tacked on after the real line gets dropped.
+        let terminators: [Character] = [".", "!", "?"]
+        if let firstTerminator = trimmed.firstIndex(where: { terminators.contains($0) }) {
+            let endIdx = trimmed.index(after: firstTerminator)
+            trimmed = String(trimmed[..<endIdx])
+        }
+        return trimmed
     }
 
     // MARK: - Reflection
@@ -185,7 +200,7 @@ enum NPCBrain {
 
             \(historyBlock)
 
-            Speak one short line, under 20 words. Ground it in what you're actually doing right now or something you saw earlier — not generic gossip. Only output the dialogue line.
+            Say ONE sentence (under 20 words) grounded in what you're doing right now or something you noticed today. Do not greet generically. Do not write \(listener)'s reply. Do not address yourself. Output only your single sentence.
             """
 
         return await respond(npcName: speaker, role: speakerRole, label: "\(speaker) dialogue", prompt: prompt)
@@ -229,9 +244,9 @@ enum NPCBrain {
 
         let prompt = """
             It's \(timeOfDay). You're near the \(location); you've been \(responderActivity.lowercased()) \(responderActivityDuration).
-            \(speaker) (\(speakerRole)) just said to you: "\(previousLine)"\(observationsBlock)\(historyBlock)
+            \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(historyBlock)
 
-            Reply in one short line, under 20 words. React to what they said and stay grounded in what you're doing right now.\(closingNote) Only output the dialogue line.
+            Say ONE sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing. Do not write \(speaker)'s next line. Do not address yourself.\(closingNote) Output only your single sentence.
             """
 
         return await respond(npcName: responder, role: responderRole, label: "\(responder) response", prompt: prompt)
