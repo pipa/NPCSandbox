@@ -232,6 +232,16 @@ class NPC {
         restoreScheduleActivity(clock: clock)
     }
 
+    /// Player-chat versions: same interrupt semantics, no chat-cooldown bookkeeping
+    /// (the player isn't another NPC and shouldn't take up the daily social budget).
+    func beginPlayerChat(clock: GameClock) {
+        isInterrupted = true
+        let location = MapLocation.nearestName(to: gridPos)
+        memory.logAction("Talking with a visitor near \(location)", at: clock.timeString)
+        currentActivity = "Talking"
+        updateLabel()
+    }
+
     /// Human-friendly description of how long the NPC has been on their current
     /// schedule entry. Used to ground dialogue prompts.
     func activityDurationDescription(currentMinutes: Int) -> String {

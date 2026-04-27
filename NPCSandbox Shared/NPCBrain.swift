@@ -289,6 +289,51 @@ enum NPCBrain {
         }
     }
 
+    // MARK: - Player chat
+
+    /// Player talks to an NPC. The visitor is anonymous — no relationship,
+    /// no intentions toward them, just a stranger speaking. Uses the NPC's
+    /// existing per-NPC session so role + recent activity context carry over.
+    static func respondToPlayer(
+        npcName: String,
+        role: String,
+        location: String,
+        timeOfDay: String,
+        npcActivity: String,
+        npcActivityDuration: String,
+        npcObservations: [String],
+        npcIntentions: [String],
+        playerMessage: String,
+        chatHistory: [String]
+    ) async -> String? {
+        guard isAvailable else { return nil }
+
+        let observationsBlock = npcObservations.isEmpty
+            ? ""
+            : "\nEarlier today you noticed:\n" + npcObservations.joined(separator: "\n")
+
+        let intentionsBlock = npcIntentions.isEmpty
+            ? ""
+            : "\nLast night you decided:\n" + npcIntentions.map { "- \($0)" }.joined(separator: "\n")
+
+        let historyBlock: String
+        if chatHistory.isEmpty {
+            historyBlock = ""
+        } else {
+            let joined = chatHistory.joined(separator: "\n")
+            historyBlock = "\n\nEarlier in this exchange:\n\(joined)"
+        }
+
+        let prompt = """
+            It's \(timeOfDay). You're at the \(location), \(npcActivity.lowercased()) \(npcActivityDuration).
+            A visitor — a stranger to the village — is here speaking with you. They just said: "\(playerMessage)"\(observationsBlock)\(intentionsBlock)\(historyBlock)
+
+            Reply to the visitor with one short sentence — the actual words you'd say out loud. Stay in character as \(npcName) the \(role). Do NOT narrate. Output only the spoken line.
+            """
+
+        return await respond(npcName: npcName, role: role, label: "\(npcName) -> visitor", prompt: prompt)
+    }
+
     // MARK: - Dialogue
 
     static func generateDialogue(

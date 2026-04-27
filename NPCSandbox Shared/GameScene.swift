@@ -1,5 +1,8 @@
 import SpriteKit
 import GameplayKit
+#if os(iOS)
+import UIKit
+#endif
 
 @MainActor
 class GameScene: SKScene {
@@ -21,6 +24,20 @@ class GameScene: SKScene {
     private var currentThinkingLabel: SKLabelNode?
     private var waitingForDialogue = false
     private var skyOverlay: SKSpriteNode!
+
+    // Player chat state (iOS only).
+    private var playerChatActive = false
+    private var playerChatNPC: NPC?
+    private var playerChatTranscript: [String] = []
+    private var playerChatNPCThinking = false
+    private var playerChatNPCActivity = ""
+    private var playerChatNPCActivityDuration = ""
+    #if os(iOS)
+    private var playerInputField: UITextField?
+    private var playerInputDelegate: PlayerInputDelegate?
+    #endif
+
+    private let playerColor = SKColor(red: 1.0, green: 1.0, blue: 0.85, alpha: 1)
 
     private let chatBoxMargin: CGFloat = 6
     private let chatPadding: CGFloat = 6
@@ -441,6 +458,11 @@ class GameScene: SKScene {
         let isNight = gameClock.hour >= 22 || gameClock.hour < 6
         gameClock.minutesPerSecond = isNight ? 60.0 : 5.0
 
+        // While the player is talking with an NPC the world holds still —
+        // schedules don't advance, the clock doesn't tick, no other chats
+        // start. Lets the user read replies and type without time pressure.
+        if playerChatActive { return }
+
         if gameClock.advance(by: dt) {
             timeLabel.text = gameClock.timeString
             updateSkyOverlay()
@@ -471,6 +493,16 @@ class GameScene: SKScene {
     // MARK: - Input
 
     private func handleTap(at point: CGPoint) {
+        // Player-chat: tap outside the chat bubble closes the chat. Taps
+        // inside it (or on the text field, which intercepts at the view
+        // layer) are ignored here.
+        if playerChatActive {
+            if !chatBoxContains(point) {
+                endPlayerChat()
+            }
+            return
+        }
+
         if dialogNode != nil {
             dismissDialog()
             waitingForDialogue = false
@@ -480,10 +512,20 @@ class GameScene: SKScene {
         for npc in npcs {
             let dist = hypot(npc.sprite.position.x - point.x, npc.sprite.position.y - point.y)
             if dist < tileSize * 1.2 {
+                #if os(iOS)
+                startPlayerChat(with: npc)
+                #else
                 showNPCDialog(for: npc)
+                #endif
                 return
             }
         }
+    }
+
+    private func chatBoxContains(_ scenePoint: CGPoint) -> Bool {
+        guard let dialog = dialogNode, let bg = chatBackground else { return false }
+        let local = dialog.convert(scenePoint, from: self)
+        return bg.frame.contains(local)
     }
 
     #if os(iOS)
@@ -1022,4 +1064,151 @@ class GameScene: SKScene {
             didReflectToday = false
         }
     }
+
+    // MARK: - Player chat (iOS)
+
+    #if os(iOS)
+    private func startPlayerChat(with npc: NPC) {
+        guard !playerChatActive, !waitingForDialogue, dialogNode == nil else { return }
+        playerChatActive = true
+        playerChatNPC = npc
+        playerChatTranscript = []
+        // Capture activity context BEFORE beginPlayerChat overrides it to "Talking".
+        playerChatNPCActivity = npc.currentActivity
+        playerChatNPCActivityDuration = npc.activityDurationDescription(currentMinutes: gameClock.totalMinutes)
+        npc.beginPlayerChat(clock: gameClock)
+        openChatLog()
+        installPlayerInputField()
+    }
+
+    private func endPlayerChat() {
+        guard playerChatActive else { return }
+        if let npc = playerChatNPC {
+            npc.endChat(clock: gameClock)
+        }
+        playerChatActive = false
+        playerChatNPC = nil
+        playerChatTranscript = []
+        playerChatNPCThinking = false
+        removePlayerInputField()
+        dismissDialog()
+    }
+
+    private func installPlayerInputField() {
+        guard let view = self.view else { return }
+
+        let field = UITextField(frame: .zero)
+        field.borderStyle = .roundedRect
+        field.placeholder = "Say something…"
+        field.returnKeyType = .send
+        field.autocapitalizationType = .sentences
+        field.font = UIFont(name: "Menlo", size: 14) ?? .systemFont(ofSize: 14)
+        field.backgroundColor = UIColor(white: 0.08, alpha: 0.95)
+        field.textColor = .white
+        field.tintColor = .white
+        field.attributedPlaceholder = NSAttributedString(
+            string: "Say something…",
+            attributes: [.foregroundColor: UIColor(white: 0.6, alpha: 1)]
+        )
+
+        let delegate = PlayerInputDelegate { [weak self] text in
+            self?.submitPlayerMessage(text: text)
+        }
+        field.delegate = delegate
+        playerInputDelegate = delegate
+
+        view.addSubview(field)
+        playerInputField = field
+        positionPlayerInputField()
+        field.becomeFirstResponder()
+    }
+
+    private func removePlayerInputField() {
+        playerInputField?.resignFirstResponder()
+        playerInputField?.removeFromSuperview()
+        playerInputField = nil
+        playerInputDelegate = nil
+    }
+
+    private func positionPlayerInputField() {
+        guard let view = self.view, let field = playerInputField else { return }
+        let margin: CGFloat = 12
+        let height: CGFloat = 36
+        let width = view.bounds.width - margin * 2
+        // Keep the field high enough to clear the keyboard on most devices.
+        let y = view.bounds.height * 0.45
+        field.frame = CGRect(x: margin, y: y, width: width, height: height)
+    }
+
+    override func didChangeSize(_ oldSize: CGSize) {
+        super.didChangeSize(oldSize)
+        positionPlayerInputField()
+    }
+
+    private func submitPlayerMessage(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !playerChatNPCThinking, let npc = playerChatNPC else { return }
+
+        // Append the player's line, then prep the NPC's thinking line.
+        prepareNextLine(speaker: "You", color: playerColor)
+        commitCurrentLine(text: trimmed)
+        playerChatTranscript.append("You: \"\(trimmed)\"")
+        prepareNextLine(speaker: npc.name, color: npc.dialogueColor)
+        playerChatNPCThinking = true
+
+        let npcName = npc.name
+        let npcRole = npc.role
+        let location = MapLocation.nearestName(to: npc.gridPos)
+        let timeOfDay = gameClock.timeString
+        let activity = playerChatNPCActivity
+        let activityDuration = playerChatNPCActivityDuration
+        let observations = npc.memory.recentObservations()
+        let intentions = npc.intentions
+        let history = playerChatTranscript
+
+        Task.detached { [weak self, weak npc] in
+            let reply = await NPCBrain.respondToPlayer(
+                npcName: npcName,
+                role: npcRole,
+                location: location,
+                timeOfDay: timeOfDay,
+                npcActivity: activity,
+                npcActivityDuration: activityDuration,
+                npcObservations: observations,
+                npcIntentions: intentions,
+                playerMessage: trimmed,
+                chatHistory: history
+            ) ?? "..."
+
+            await MainActor.run { [weak self, weak npc] in
+                guard let self else { return }
+                self.commitCurrentLine(text: reply)
+                self.playerChatTranscript.append("\(npcName): \"\(reply)\"")
+                self.playerChatNPCThinking = false
+                if let npc {
+                    let timeStr = self.gameClock.timeString
+                    npc.memory.logDialogue(speaker: "Visitor", partner: "Visitor", line: trimmed, at: timeStr)
+                    npc.memory.logDialogue(speaker: npcName, partner: "Visitor", line: reply, at: timeStr)
+                }
+            }
+        }
+    }
+    #endif
 }
+
+#if os(iOS)
+private final class PlayerInputDelegate: NSObject, UITextFieldDelegate {
+    let onSubmit: (String) -> Void
+
+    init(onSubmit: @escaping (String) -> Void) {
+        self.onSubmit = onSubmit
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        let text = textField.text ?? ""
+        textField.text = ""
+        onSubmit(text)
+        return false
+    }
+}
+#endif
