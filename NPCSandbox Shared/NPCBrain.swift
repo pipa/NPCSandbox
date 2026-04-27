@@ -88,11 +88,13 @@ enum NPCBrain {
 
         private static func makeSession(npcName: String, role: String) -> LanguageModelSession {
             let identity = "Your name is \(npcName). You are \(role) in a small medieval town."
-            let voice = "You speak ONLY as \(npcName). Never speak for or address yourself; never write the other person's reply; never produce more than one sentence at a time."
-            let format = "Reply with a single short in-character sentence — under 20 words. No quotes, no stage directions, no name prefix like '\(npcName):'."
-            let bans = "Never narrate prompt details (do NOT say things like 'X just walked up'). Never greet ('Good morning', 'Hello'). Never close ('have a lovely day', 'see you', 'good day')."
-            let grounding = "Stay grounded in what you are actually doing right now."
-            let instructions = Instructions("\(identity) \(voice) \(format) \(bans) \(grounding)")
+            let world = "The town has only three places: a bakery (Elara's), a tavern (Mora's), and farm fields with a farmhouse (Gareth's). There is no market, blacksmith, mill, smithy, harbor, church, or any other place — never refer to them. The only people are Elara, Mora, and Gareth."
+            let outputRule = "Your output is the LITERAL WORDS YOU SPEAK OUT LOUD — exactly what someone standing nearby would hear. It is NOT a description, NOT narration, NOT a stage direction."
+            let narrationBan = "NEVER write narration like 'I smile', 'I notice', 'I walk', 'I continue', 'X greets me', 'X smiles', 'X is about to', 'I'm grateful'. Those describe actions and feelings — they are wrong. Speak the dialogue line only."
+            let format = "Reply with one short in-character sentence — under 20 words. No quotes, no parentheticals, no name prefix like '\(npcName):'."
+            let bans = "Never greet ('Good morning', 'Hello', 'Good day'). Never close ('have a lovely day', 'see you', 'good day to you')."
+            let grounding = "Ground every line in what you are actually doing right now or something concrete you noticed today."
+            let instructions = Instructions("\(identity) \(world) \(outputRule) \(narrationBan) \(format) \(bans) \(grounding)")
             return LanguageModelSession(instructions: instructions)
         }
     }
@@ -340,7 +342,7 @@ enum NPCBrain {
 
             \(historyBlock)
 
-            Say ONE in-character sentence (under 20 words) about something concrete: what you're doing, something you noticed, or something you intend to do. Do not narrate the situation. Do not greet (no "Good morning"). Do not write \(listener)'s reply. Output only your single sentence.
+            Speak one short sentence to \(listener) — the actual words you'd say out loud. Mention something concrete from your day. Do NOT narrate ("I smile", "I notice", "\(listener) greets me"). Do NOT greet. Output only the spoken line.
             """
 
         return await respond(npcName: speaker, role: speakerRole, label: "\(speaker) dialogue", prompt: prompt)
@@ -399,7 +401,7 @@ enum NPCBrain {
             It's \(timeOfDay). You're at the \(location), \(responderActivity.lowercased()) \(responderActivityDuration).
             \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(othersBlock)\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
 
-            Say ONE in-character sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing — do not narrate the situation or repeat prompt details. Do not write \(speaker)'s next line.\(closingNote) Output only your single sentence.
+            Reply to \(speaker) with one short sentence — the actual words you'd say out loud. React to what they said. Do NOT narrate ("I smile", "I notice", "\(speaker) greets me"). Do NOT write \(speaker)'s next line.\(closingNote) Output only the spoken line.
             """
 
         return await respond(npcName: responder, role: responderRole, label: "\(responder) response", prompt: prompt)
