@@ -16,7 +16,15 @@ class GameScene: SKScene {
     private var didReflectToday = false
     private var currentDay: Int = 1
     private var dialogNode: SKNode?
+    private var chatBackground: SKShapeNode?
+    private var chatLines: [SKLabelNode] = []
+    private var currentThinkingLabel: SKLabelNode?
     private var waitingForDialogue = false
+
+    private let chatBoxMargin: CGFloat = 6
+    private let chatPadding: CGFloat = 6
+    private let chatFontSize: CGFloat = 7
+    private let chatLineSpacing: CGFloat = 2
 
     class func newGameScene() -> GameScene {
         let scene = GameScene(size: CGSize(width: 320, height: 240))
@@ -199,6 +207,7 @@ class GameScene: SKScene {
                 ScheduleEntry(hour: 19, minute: 0, location: MapLocation.bakeryDoor, activity: "Home"),
             ],
             sociability: 0.7,
+            dialogueColor: SKColor(red: 0.6, green: 0.9, blue: 1.0, alpha: 1),
             tileSize: tileSize,
             mapRows: mapRows
         )
@@ -221,6 +230,7 @@ class GameScene: SKScene {
                 ScheduleEntry(hour: 21, minute: 0, location: MapLocation.tavernDoor, activity: "Closing"),
             ],
             sociability: 0.8,
+            dialogueColor: SKColor(red: 1.0, green: 0.85, blue: 0.5, alpha: 1),
             tileSize: tileSize,
             mapRows: mapRows
         )
@@ -242,6 +252,7 @@ class GameScene: SKScene {
                 ScheduleEntry(hour: 19, minute: 0, location: MapLocation.farmhouseDoor, activity: "Home"),
             ],
             sociability: 0.6,
+            dialogueColor: SKColor(red: 0.75, green: 1.0, blue: 0.7, alpha: 1),
             tileSize: tileSize,
             mapRows: mapRows
         )
@@ -411,8 +422,10 @@ class GameScene: SKScene {
         let now = gameClock.totalMinutes
         let speakerName = speaker.name
         let speakerRole = speaker.role
+        let speakerColor = speaker.dialogueColor
         let listenerName = listener.name
         let listenerRole = listener.role
+        let listenerColor = listener.dialogueColor
         let location = MapLocation.nearestName(to: speaker.gridPos)
         let speakerActivity = speaker.currentActivity
         let listenerActivity = listener.currentActivity
@@ -428,8 +441,8 @@ class GameScene: SKScene {
         listener.beginChat(with: speaker, clock: gameClock)
 
         waitingForDialogue = true
-        buildChatBox(leftName: speakerName, rightName: listenerName)
-        showThinking(side: "leftText")
+        openChatLog()
+        prepareNextLine(speaker: speakerName, color: speakerColor)
 
         Task.detached { [weak self, weak speaker, weak listener] in
             defer {
@@ -462,8 +475,10 @@ class GameScene: SKScene {
                 var transcript: [(speaker: String, line: String)] = [(speakerName, openingLine)]
 
                 await MainActor.run { [weak self] in
-                    self?.setChatText(side: "leftText", text: openingLine)
-                    if turnCount > 1 { self?.showThinking(side: "rightText") }
+                    self?.commitCurrentLine(text: openingLine)
+                    if turnCount > 1 {
+                        self?.prepareNextLine(speaker: listenerName, color: listenerColor)
+                    }
                 }
 
                 // Turns 2…N — alternate sides, each replying to the previous line.
@@ -480,8 +495,8 @@ class GameScene: SKScene {
                     let responderActivity = responderIsListener ? listenerActivity : speakerActivity
                     let responderActivityDuration = responderIsListener ? listenerActivityDuration : speakerActivityDuration
                     let responderObservations = responderIsListener ? listenerObservations : speakerObservations
-                    let side = responderIsListener ? "rightText" : "leftText"
-                    let nextSide = responderIsListener ? "leftText" : "rightText"
+                    let nextResponderName = responderIsListener ? speakerName : listenerName
+                    let nextResponderColor = responderIsListener ? speakerColor : listenerColor
                     let isFinal = (turnIndex == turnCount - 1)
 
                     let inSessionHistory = transcript.map { "\($0.speaker): \"\($0.line)\"" }
@@ -505,8 +520,10 @@ class GameScene: SKScene {
                     transcript.append((responderName, line))
 
                     await MainActor.run { [weak self] in
-                        self?.setChatText(side: side, text: line)
-                        if !isFinal { self?.showThinking(side: nextSide) }
+                        self?.commitCurrentLine(text: line)
+                        if !isFinal {
+                            self?.prepareNextLine(speaker: nextResponderName, color: nextResponderColor)
+                        }
                     }
                 }
 
@@ -529,94 +546,99 @@ class GameScene: SKScene {
         }
     }
 
-    private func buildChatBox(leftName: String, rightName: String) {
+    private func openChatLog() {
         dismissDialog()
 
         let container = SKNode()
         container.zPosition = 200
 
-        let margin: CGFloat = 6
-        let boxWidth = size.width - margin * 2
-        let boxHeight: CGFloat = 58
+        let boxWidth = size.width - chatBoxMargin * 2
+        let bg = SKShapeNode(rect: CGRect(x: 0, y: 0, width: boxWidth, height: chatPadding * 2),
+                             cornerRadius: 2)
+        bg.fillColor = SKColor(red: 0.08, green: 0.08, blue: 0.18, alpha: 0.95)
+        bg.strokeColor = SKColor(red: 0.45, green: 0.5, blue: 0.7, alpha: 1)
+        bg.lineWidth = 1
+        container.addChild(bg)
 
-        let outer = SKShapeNode(rect: CGRect(x: 0, y: 0, width: boxWidth, height: boxHeight), cornerRadius: 2)
-        outer.fillColor = SKColor(red: 0.08, green: 0.08, blue: 0.18, alpha: 0.95)
-        outer.strokeColor = SKColor(red: 0.45, green: 0.5, blue: 0.7, alpha: 1)
-        outer.lineWidth = 1
-        container.addChild(outer)
-
-        let inner = SKShapeNode(rect: CGRect(x: 2, y: 2, width: boxWidth - 4, height: boxHeight - 4), cornerRadius: 1)
-        inner.fillColor = .clear
-        inner.strokeColor = SKColor(red: 0.3, green: 0.35, blue: 0.5, alpha: 0.6)
-        inner.lineWidth = 0.5
-        container.addChild(inner)
-
-        let leftNameLabel = SKLabelNode(text: leftName)
-        leftNameLabel.fontSize = 5
-        leftNameLabel.fontName = "Menlo-Bold"
-        leftNameLabel.fontColor = SKColor(red: 0.6, green: 0.9, blue: 1.0, alpha: 1)
-        leftNameLabel.horizontalAlignmentMode = .left
-        leftNameLabel.verticalAlignmentMode = .top
-        leftNameLabel.position = CGPoint(x: 8, y: boxHeight - 6)
-        container.addChild(leftNameLabel)
-
-        let leftText = SKLabelNode(text: "")
-        leftText.name = "leftText"
-        leftText.fontSize = 5
-        leftText.fontName = "Menlo"
-        leftText.fontColor = .white
-        leftText.horizontalAlignmentMode = .left
-        leftText.verticalAlignmentMode = .top
-        leftText.numberOfLines = 0
-        leftText.preferredMaxLayoutWidth = boxWidth * 0.7
-        leftText.position = CGPoint(x: 8, y: boxHeight - 14)
-        container.addChild(leftText)
-
-        let rightNameLabel = SKLabelNode(text: rightName)
-        rightNameLabel.fontSize = 5
-        rightNameLabel.fontName = "Menlo-Bold"
-        rightNameLabel.fontColor = SKColor(red: 1.0, green: 0.85, blue: 0.5, alpha: 1)
-        rightNameLabel.horizontalAlignmentMode = .right
-        rightNameLabel.verticalAlignmentMode = .top
-        rightNameLabel.position = CGPoint(x: boxWidth - 8, y: boxHeight - 28)
-        container.addChild(rightNameLabel)
-
-        let rightText = SKLabelNode(text: "")
-        rightText.name = "rightText"
-        rightText.fontSize = 5
-        rightText.fontName = "Menlo"
-        rightText.fontColor = .white
-        rightText.horizontalAlignmentMode = .right
-        rightText.verticalAlignmentMode = .top
-        rightText.numberOfLines = 0
-        rightText.preferredMaxLayoutWidth = boxWidth * 0.7
-        rightText.position = CGPoint(x: boxWidth - 8, y: boxHeight - 36)
-        container.addChild(rightText)
-
-        container.position = CGPoint(x: margin, y: margin)
+        container.position = CGPoint(x: chatBoxMargin, y: chatBoxMargin)
         addChild(container)
         dialogNode = container
+        chatBackground = bg
+        chatLines = []
+        currentThinkingLabel = nil
     }
 
-    private func showThinking(side: String) {
-        guard let label = dialogNode?.childNode(withName: side) as? SKLabelNode else { return }
-        let action = SKAction.repeatForever(
-            SKAction.sequence([
-                SKAction.run { label.text = "." },
-                SKAction.wait(forDuration: 0.3),
-                SKAction.run { label.text = ".." },
-                SKAction.wait(forDuration: 0.3),
-                SKAction.run { label.text = "..." },
-                SKAction.wait(forDuration: 0.3),
-            ])
-        )
+    /// Append a "Speaker: ..." placeholder line that animates the thinking dots
+    /// until `commitCurrentLine` replaces its text.
+    private func prepareNextLine(speaker: String, color: SKColor) {
+        guard let container = dialogNode else { return }
+        let boxWidth = size.width - chatBoxMargin * 2
+
+        let label = SKLabelNode(text: "\(speaker): .")
+        label.fontName = "Menlo"
+        label.fontSize = chatFontSize
+        label.fontColor = color
+        label.horizontalAlignmentMode = .left
+        label.verticalAlignmentMode = .top
+        label.numberOfLines = 0
+        label.preferredMaxLayoutWidth = boxWidth - chatPadding * 2
+        container.addChild(label)
+        chatLines.append(label)
+        currentThinkingLabel = label
+
+        let dot1 = "\(speaker): ."
+        let dot2 = "\(speaker): .."
+        let dot3 = "\(speaker): ..."
+        let action = SKAction.repeatForever(SKAction.sequence([
+            SKAction.run { [weak label] in label?.text = dot1 },
+            SKAction.wait(forDuration: 0.3),
+            SKAction.run { [weak label] in label?.text = dot2 },
+            SKAction.wait(forDuration: 0.3),
+            SKAction.run { [weak label] in label?.text = dot3 },
+            SKAction.wait(forDuration: 0.3),
+        ]))
         label.run(action, withKey: "thinking")
+        relayoutChatLog()
     }
 
-    private func setChatText(side: String, text: String) {
-        guard let label = dialogNode?.childNode(withName: side) as? SKLabelNode else { return }
+    /// Replace the current thinking label's dots with the real dialogue line.
+    private func commitCurrentLine(text: String) {
+        guard let label = currentThinkingLabel else { return }
         label.removeAction(forKey: "thinking")
-        label.text = "\"\(text)\""
+
+        if let prefixEnd = label.text?.range(of: ": ") {
+            let speakerPrefix = String(label.text![..<prefixEnd.upperBound])
+            label.text = "\(speakerPrefix)\"\(text)\""
+        } else {
+            label.text = "\"\(text)\""
+        }
+        currentThinkingLabel = nil
+        relayoutChatLog()
+    }
+
+    /// Stack lines top-to-bottom inside the box and resize the background
+    /// to fit. Layout is recomputed any time text changes (and thus heights).
+    private func relayoutChatLog() {
+        guard dialogNode != nil, let bg = chatBackground else { return }
+        let boxWidth = size.width - chatBoxMargin * 2
+
+        var heights: [CGFloat] = []
+        var totalHeight: CGFloat = chatPadding
+        for label in chatLines {
+            let h = max(label.frame.height, chatFontSize)
+            heights.append(h)
+            totalHeight += h + chatLineSpacing
+        }
+        totalHeight += chatPadding - chatLineSpacing
+
+        for (i, label) in chatLines.enumerated() {
+            var yFromTop = chatPadding
+            for prior in heights.prefix(i) { yFromTop += prior + chatLineSpacing }
+            label.position = CGPoint(x: chatPadding, y: totalHeight - yFromTop)
+        }
+
+        bg.path = CGPath(roundedRect: CGRect(x: 0, y: 0, width: boxWidth, height: totalHeight),
+                         cornerWidth: 2, cornerHeight: 2, transform: nil)
     }
 
     // MARK: - Dialog
@@ -675,6 +697,9 @@ class GameScene: SKScene {
     private func dismissDialog() {
         dialogNode?.removeFromParent()
         dialogNode = nil
+        chatBackground = nil
+        chatLines = []
+        currentThinkingLabel = nil
     }
 
     // MARK: - Reflection

@@ -51,6 +51,7 @@ class NPC {
     let label: SKLabelNode
     let memory: MemoryStream
     let sociability: Double
+    let dialogueColor: SKColor
     var gridPos: GridPosition
     let schedule: [ScheduleEntry]
 
@@ -81,12 +82,13 @@ class NPC {
     private let chatCooldownMinutes = 120
 
     init(name: String, role: String, tileID: Int, startPos: GridPosition, schedule: [ScheduleEntry],
-         sociability: Double, tileSize: CGFloat, mapRows: Int) {
+         sociability: Double, dialogueColor: SKColor, tileSize: CGFloat, mapRows: Int) {
         self.name = name
         self.role = role
         self.gridPos = startPos
         self.schedule = schedule.sorted { $0.totalMinutes < $1.totalMinutes }
         self.sociability = sociability
+        self.dialogueColor = dialogueColor
         self.tileSize = tileSize
         self.mapRows = mapRows
         self.memory = MemoryStream(ownerName: name)
