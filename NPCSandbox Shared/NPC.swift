@@ -117,12 +117,12 @@ class NPC {
         sprite.zPosition = 10
 
         label = SKLabelNode(text: name)
-        label.fontSize = 4
-        label.fontColor = .white
-        label.fontName = "Helvetica-Bold"
+        label.fontSize = 5
+        label.fontColor = dialogueColor
+        label.fontName = "Menlo-Bold"
         label.verticalAlignmentMode = .bottom
-        label.position = CGPoint(x: 0, y: tileSize * 0.6)
-        label.zPosition = 11
+        label.position = CGPoint(x: 0, y: tileSize * 0.65)
+        label.zPosition = 60  // above sky tint
         sprite.addChild(label)
     }
 

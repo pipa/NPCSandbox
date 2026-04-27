@@ -20,6 +20,7 @@ class GameScene: SKScene {
     private var chatLines: [SKLabelNode] = []
     private var currentThinkingLabel: SKLabelNode?
     private var waitingForDialogue = false
+    private var skyOverlay: SKSpriteNode!
 
     private let chatBoxMargin: CGFloat = 6
     private let chatPadding: CGFloat = 6
@@ -38,6 +39,7 @@ class GameScene: SKScene {
         renderTileMap(overlay: overlay)
         buildNavGraph(from: overlay)
         spawnNPCs()
+        setupSkyOverlay()
         setupHUD()
         for npc in npcs {
             NPCBrain.warmUp(npcName: npc.name, role: npc.role)
@@ -263,6 +265,54 @@ class GameScene: SKScene {
         }
     }
 
+    // MARK: - Sky overlay
+
+    private func setupSkyOverlay() {
+        skyOverlay = SKSpriteNode(color: .black, size: size)
+        skyOverlay.anchorPoint = .zero
+        skyOverlay.position = .zero
+        skyOverlay.zPosition = 50
+        skyOverlay.alpha = 0
+        addChild(skyOverlay)
+        updateSkyOverlay()
+    }
+
+    /// Lerp through dawn/day/dusk/night anchors so the world tints with the clock.
+    private func updateSkyOverlay() {
+        guard let skyOverlay else { return }
+        let t = CGFloat(gameClock.hour) + CGFloat(gameClock.minute) / 60
+        let stops: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
+            // hour, r, g, b, alpha
+            (0,  0.05, 0.05, 0.20, 0.55),  // deep night
+            (5,  0.05, 0.05, 0.20, 0.55),
+            (6,  0.95, 0.55, 0.45, 0.30),  // dawn
+            (7,  1.00, 1.00, 1.00, 0.00),  // clear morning
+            (17, 1.00, 1.00, 1.00, 0.00),  // clear afternoon
+            (18, 0.95, 0.45, 0.30, 0.30),  // dusk
+            (19, 0.40, 0.20, 0.45, 0.45),  // late dusk / blue hour
+            (21, 0.05, 0.05, 0.20, 0.55),  // deep night
+            (24, 0.05, 0.05, 0.20, 0.55),
+        ]
+        var prev = stops[0]
+        for stop in stops.dropFirst() {
+            if t <= stop.0 {
+                let span = stop.0 - prev.0
+                let frac = span > 0 ? (t - prev.0) / span : 0
+                skyOverlay.color = SKColor(
+                    red: prev.1 + (stop.1 - prev.1) * frac,
+                    green: prev.2 + (stop.2 - prev.2) * frac,
+                    blue: prev.3 + (stop.3 - prev.3) * frac,
+                    alpha: 1
+                )
+                skyOverlay.alpha = prev.4 + (stop.4 - prev.4) * frac
+                return
+            }
+            prev = stop
+        }
+        skyOverlay.color = SKColor(red: prev.1, green: prev.2, blue: prev.3, alpha: 1)
+        skyOverlay.alpha = prev.4
+    }
+
     // MARK: - HUD
 
     private func setupHUD() {
@@ -365,6 +415,7 @@ class GameScene: SKScene {
 
         if gameClock.advance(by: dt) {
             timeLabel.text = gameClock.timeString
+            updateSkyOverlay()
         }
 
         if gameClock.day != currentDay {
