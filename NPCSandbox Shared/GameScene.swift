@@ -329,7 +329,21 @@ class GameScene: SKScene {
             }
         }
 
-        if let (a, b) = eligiblePairs.randomElement() {
+        // Agenda v2: when an NPC's nightly intentions named someone in the
+        // pair, that pair is the "intentional" one — pick from those first
+        // so memory→action actually shows up as a steered chat.
+        let intentionalPairs = eligiblePairs.filter { (a, b) in
+            a.intentionsName(b) || b.intentionsName(a)
+        }
+        let pool = intentionalPairs.isEmpty ? eligiblePairs : intentionalPairs
+
+        if let (a, b) = pool.randomElement() {
+            if a.intentionsName(b) {
+                print("[\(a.name)] honoring intention — seeking out \(b.name)")
+            }
+            if b.intentionsName(a) {
+                print("[\(b.name)] honoring intention — seeking out \(a.name)")
+            }
             let turns = turnCount(for: a, b)
             requestDialogue(speaker: a, listener: b, turnCount: turns)
         }

@@ -155,7 +155,19 @@ class NPC {
             }
         }
 
+        // Agenda boost: if last night's intentions name this person, we're
+        // actively trying to find them, which lifts the utility past the
+        // schedule-utility threshold even when cooldown decay would block it.
+        if intentionsName(other) {
+            utility *= 1.6
+        }
+
         return utility
+    }
+
+    /// True if any of today's intentions explicitly mention the other NPC by name.
+    func intentionsName(_ other: NPC) -> Bool {
+        intentions.contains { $0.localizedCaseInsensitiveContains(other.name) }
     }
 
     var scheduleUtility: Double {
