@@ -357,6 +357,34 @@ class GameScene: SKScene {
             }
         }
 
+        // Group chat detection: if all NPCs are mutually within radius and
+        // eligible, run a 3+ way conversation instead of a pair. This keeps
+        // the third (or fourth) NPC from being structurally excluded when
+        // everyone converges at the same square.
+        if npcs.count >= 3,
+           npcs.allSatisfy({ !$0.isInterrupted && !$0.isWalking }) {
+            let allClose = (0..<npcs.count).allSatisfy { i in
+                ((i + 1)..<npcs.count).allSatisfy { j in
+                    let dx = abs(npcs[i].gridPos.col - npcs[j].gridPos.col)
+                    let dy = abs(npcs[i].gridPos.row - npcs[j].gridPos.row)
+                    return dx + dy <= observationRadius
+                }
+            }
+            if allClose {
+                let wantCount = npcs.reduce(0) { acc, npc in
+                    let bestUtility = npcs
+                        .filter { $0 !== npc }
+                        .map { npc.socialUtility(with: $0, currentMinutes: now) }
+                        .max() ?? 0
+                    return acc + (bestUtility > npc.scheduleUtility ? 1 : 0)
+                }
+                if wantCount >= 2 {
+                    requestGroupDialogue(participants: npcs, turnCount: 5)
+                    return
+                }
+            }
+        }
+
         // Collect all socially eligible pairs, then pick one at random so
         // no fixed iteration order can lock the third NPC out of conversations.
         var eligiblePairs: [(NPC, NPC)] = []
@@ -479,6 +507,156 @@ class GameScene: SKScene {
         let avg = (a.sociability + b.sociability) / 2
         let normalized = min(max((avg - 0.5) / 0.4, 0), 1)
         return 3 + Int((normalized * 2).rounded())
+    }
+
+    /// Group chat with 3+ participants. Round-robin speakers; each turn
+    /// addresses the previous speaker, with the rest mentioned as "also here".
+    private func requestGroupDialogue(participants: [NPC], turnCount: Int) {
+        guard participants.count >= 3 else { return }
+
+        let now = gameClock.totalMinutes
+        let timeOfDay = gameClock.timeString
+        let location = MapLocation.nearestName(to: participants[0].gridPos)
+
+        struct ParticipantContext: Sendable {
+            let name: String
+            let role: String
+            let activity: String
+            let activityDuration: String
+            let observations: [String]
+            let intentions: [String]
+        }
+        let contexts = participants.map { npc in
+            ParticipantContext(
+                name: npc.name,
+                role: npc.role,
+                activity: npc.currentActivity,
+                activityDuration: npc.activityDurationDescription(currentMinutes: now),
+                observations: npc.memory.recentObservations(),
+                intentions: npc.intentions
+            )
+        }
+
+        for npc in participants {
+            for other in participants where other !== npc {
+                npc.beginChat(with: other, clock: gameClock)
+            }
+        }
+
+        waitingForDialogue = true
+        openChatLog()
+        prepareNextLine(speaker: contexts[0].name, color: participants[0].dialogueColor)
+
+        let participantsRef = participants
+
+        Task.detached { [weak self] in
+            defer {
+                Task { @MainActor [weak self] in
+                    self?.dismissDialog()
+                    self?.waitingForDialogue = false
+                    if let scene = self {
+                        for npc in participantsRef {
+                            npc.endChat(clock: scene.gameClock)
+                        }
+                    }
+                }
+            }
+
+            do {
+                var transcript: [(speaker: String, line: String)] = []
+
+                // Turn 0 — opener addresses the next NPC in the round-robin.
+                let opener = contexts[0]
+                let primaryListener = contexts[1]
+                let othersForOpener = contexts.dropFirst(2).map { $0.name }
+
+                let openingLine = await NPCBrain.generateDialogue(
+                    speaker: opener.name,
+                    speakerRole: opener.role,
+                    listener: primaryListener.name,
+                    listenerRole: primaryListener.role,
+                    othersPresent: Array(othersForOpener),
+                    location: location,
+                    timeOfDay: timeOfDay,
+                    speakerActivity: opener.activity,
+                    speakerActivityDuration: opener.activityDuration,
+                    speakerObservations: opener.observations,
+                    speakerIntentions: opener.intentions,
+                    relationshipNote: nil,
+                    priorChatsToday: 0,
+                    chatHistory: []
+                ) ?? "..."
+                transcript.append((opener.name, openingLine))
+
+                await MainActor.run { [weak self] in
+                    self?.commitCurrentLine(text: openingLine)
+                    if turnCount > 1 {
+                        let nextIdx = 1 % contexts.count
+                        self?.prepareNextLine(speaker: contexts[nextIdx].name, color: participantsRef[nextIdx].dialogueColor)
+                    }
+                }
+
+                // Turns 1…N-1 — round-robin responses.
+                for turnIndex in 1..<turnCount {
+                    if turnIndex > 1 { try await Task.sleep(for: .seconds(2)) }
+
+                    let currentIdx = turnIndex % contexts.count
+                    let prevIdx = (turnIndex - 1 + contexts.count) % contexts.count
+                    let current = contexts[currentIdx]
+                    let prev = contexts[prevIdx]
+                    let others = (0..<contexts.count)
+                        .filter { $0 != currentIdx && $0 != prevIdx }
+                        .map { contexts[$0].name }
+                    let isFinal = (turnIndex == turnCount - 1)
+                    let inSessionHistory = transcript.map { "\($0.speaker): \"\($0.line)\"" }
+                    let prevLine = transcript.last!.line
+
+                    let line = await NPCBrain.generateResponse(
+                        responder: current.name,
+                        responderRole: current.role,
+                        to: prev.name,
+                        speakerRole: prev.role,
+                        othersPresent: others,
+                        location: location,
+                        timeOfDay: timeOfDay,
+                        responderActivity: current.activity,
+                        responderActivityDuration: current.activityDuration,
+                        responderObservations: current.observations,
+                        responderIntentions: current.intentions,
+                        relationshipNote: nil,
+                        previousLine: prevLine,
+                        chatHistory: inSessionHistory,
+                        isFinal: isFinal
+                    ) ?? "..."
+                    transcript.append((current.name, line))
+
+                    await MainActor.run { [weak self] in
+                        self?.commitCurrentLine(text: line)
+                        if !isFinal {
+                            let nextIdx = (turnIndex + 1) % contexts.count
+                            self?.prepareNextLine(speaker: contexts[nextIdx].name, color: participantsRef[nextIdx].dialogueColor)
+                        }
+                    }
+                }
+
+                // Memory: log every line on every other participant's stream.
+                let finalTranscript = transcript
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    let timeStr = self.gameClock.timeString
+                    for entry in finalTranscript {
+                        print("[\(timeStr)] [DLG] \(entry.speaker): \"\(entry.line)\"")
+                        for npc in participantsRef where npc.name != entry.speaker {
+                            npc.memory.logDialogue(speaker: entry.speaker, partner: entry.speaker, line: entry.line, at: timeStr)
+                        }
+                    }
+                }
+
+                try await Task.sleep(for: .seconds(3))
+            } catch {
+                print("[GroupDialogue] cancelled or failed: \(error)")
+            }
+        }
     }
 
     private func requestDialogue(speaker: NPC, listener: NPC, turnCount: Int) {

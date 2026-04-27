@@ -294,6 +294,7 @@ enum NPCBrain {
         speakerRole: String,
         listener: String,
         listenerRole: String,
+        othersPresent: [String] = [],
         location: String,
         timeOfDay: String,
         speakerActivity: String,
@@ -329,9 +330,13 @@ enum NPCBrain {
                 """
         }
 
+        let othersBlock = othersPresent.isEmpty
+            ? ""
+            : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") also here."
+
         let prompt = """
             It's \(timeOfDay). You're at the \(location), \(speakerActivity.lowercased()) \(speakerActivityDuration).
-            \(listener) (\(listenerRole)) is here with you.\(observationsBlock)\(intentionsBlock)\(relationshipBlock)
+            \(listener) (\(listenerRole)) is here with you.\(othersBlock)\(observationsBlock)\(intentionsBlock)\(relationshipBlock)
 
             \(historyBlock)
 
@@ -346,6 +351,7 @@ enum NPCBrain {
         responderRole: String,
         to speaker: String,
         speakerRole: String,
+        othersPresent: [String] = [],
         location: String,
         timeOfDay: String,
         responderActivity: String,
@@ -385,9 +391,13 @@ enum NPCBrain {
             ? " This is your closing line — wrap up naturally and part ways. Don't ask a new question."
             : ""
 
+        let othersBlock = othersPresent.isEmpty
+            ? ""
+            : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") also here."
+
         let prompt = """
             It's \(timeOfDay). You're at the \(location), \(responderActivity.lowercased()) \(responderActivityDuration).
-            \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
+            \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(othersBlock)\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
 
             Say ONE in-character sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing — do not narrate the situation or repeat prompt details. Do not write \(speaker)'s next line.\(closingNote) Output only your single sentence.
             """
