@@ -289,6 +289,12 @@ class NPC {
     func socialUtility(with other: NPC, currentMinutes: Int) -> Double {
         guard !isInterrupted, !isWalking else { return 0 }
 
+        // Hard cutoff: never re-chat with the same partner within 30 game-min.
+        // Soft decay alone wasn't preventing immediate-echo follow-up chats.
+        if let lastChat = chatCooldowns[other.name], currentMinutes - lastChat < 30 {
+            return 0
+        }
+
         var utility = sociability * 0.7
 
         if let lastChat = chatCooldowns[other.name] {
@@ -410,6 +416,10 @@ class NPC {
     /// waiting for the next schedule trigger.
     func considerWander(clock: GameClock, navGraph: GKGridGraph<GKGridGraphNode>) {
         guard !isInterrupted, !isWalking else { return }
+        // Don't wander before the first scheduled entry has actually triggered —
+        // otherwise NPCs drift away from their start positions before the day
+        // begins and trigger spurious early-morning encounters.
+        guard lastTriggeredMinute >= 0 else { return }
         let now = clock.totalMinutes
         if now - lastWanderMinute < wanderIntervalMinutes { return }
 

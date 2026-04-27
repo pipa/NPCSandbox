@@ -30,7 +30,7 @@ enum NPCBrain {
     private static let dialogueOptions = GenerationOptions(
         sampling: .random(top: 40),
         temperature: 0.85,
-        maximumResponseTokens: 40
+        maximumResponseTokens: 60
     )
     private static let reflectionOptions = GenerationOptions(
         sampling: .greedy,
@@ -391,7 +391,7 @@ enum NPCBrain {
 
         let othersBlock = othersPresent.isEmpty
             ? ""
-            : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") also here."
+            : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") standing right here with you, within earshot — address them directly when it makes sense, don't refer to them in the third person."
 
         let prompt = """
             It's \(timeOfDay). You're at the \(location), \(speakerActivity.lowercased()) \(speakerActivityDuration). You feel \(speakerMood).
@@ -399,7 +399,7 @@ enum NPCBrain {
 
             \(historyBlock)
 
-            Speak one short sentence to \(listener) — the actual words you'd say out loud, in your character's voice. Open mid-thought: react to what you saw, complain or tease, share a specific opinion, mention a concrete detail of your day. Don't be polite for politeness' sake. Don't greet. Don't narrate ("I smile", "I notice"). Output only the spoken line.
+            Speak one short sentence to \(listener) — the actual words you'd say out loud, in your character's voice. Open mid-thought: react to what you saw, complain or tease, share a specific opinion, mention a concrete detail of your day. Do NOT repeat anything either of you has said today. Don't be polite for politeness' sake. Don't greet. Don't narrate ("I smile", "I notice"). Output only the spoken line.
             """
 
         return await respond(npcName: speaker, role: speakerRole, personality: speakerPersonality, label: "\(speaker) dialogue", prompt: prompt)
@@ -454,13 +454,13 @@ enum NPCBrain {
 
         let othersBlock = othersPresent.isEmpty
             ? ""
-            : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") also here."
+            : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") standing right here too, within earshot — address them directly when it makes sense, don't refer to them in the third person."
 
         let prompt = """
             It's \(timeOfDay). You're at the \(location), \(responderActivity.lowercased()) \(responderActivityDuration). You feel \(responderMood).
             \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(othersBlock)\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
 
-            Reply to \(speaker) with one short sentence — the actual words you'd say out loud, in your character's voice. React to what they said with an opinion, a complaint, a tease, or a specific fact from your day. Don't narrate, don't be generically polite, don't write \(speaker)'s next line.\(closingNote) Output only the spoken line.
+            Reply to \(speaker) with one short sentence — the actual words you'd say out loud, in your character's voice. React to what they said with an opinion, a complaint, a tease, or a specific fact from your day. Do NOT repeat any line that's already been said in this exchange. Don't narrate, don't be generically polite, don't write \(speaker)'s next line.\(closingNote) Output only the spoken line.
             """
 
         return await respond(npcName: responder, role: responderRole, personality: responderPersonality, label: "\(responder) response", prompt: prompt)
