@@ -72,7 +72,7 @@ class MemoryStream {
 
     /// Last few observations (what this NPC has noticed others doing today),
     /// formatted oldest-first for use in dialogue prompts.
-    func recentObservations(limit: Int = 3) -> [String] {
+    func recentObservations(limit: Int = 2) -> [String] {
         let obs = entries
             .filter { $0.kind == .observation }
             .map { "[\($0.gameTime)] \($0.text)" }

@@ -87,13 +87,12 @@ enum NPCBrain {
         }
 
         private static func makeSession(npcName: String, role: String) -> LanguageModelSession {
-            let instructions = Instructions(
-                "Your name is \(npcName). You are \(role) in a small medieval town. " +
-                "You speak ONLY as \(npcName). You never speak for or address yourself; " +
-                "you never write the other person's reply; you never produce more than one sentence at a time. " +
-                "Reply with a single short sentence — under 20 words, no quotes, no stage directions, " +
-                "no closing salutations, no name prefix like 'Mora:'. Stay grounded in what you are actually doing right now."
-            )
+            let identity = "Your name is \(npcName). You are \(role) in a small medieval town."
+            let voice = "You speak ONLY as \(npcName). Never speak for or address yourself; never write the other person's reply; never produce more than one sentence at a time."
+            let format = "Reply with a single short in-character sentence — under 20 words. No quotes, no stage directions, no name prefix like '\(npcName):'."
+            let bans = "Never narrate prompt details (do NOT say things like 'X just walked up'). Never greet ('Good morning', 'Hello'). Never close ('have a lovely day', 'see you', 'good day')."
+            let grounding = "Stay grounded in what you are actually doing right now."
+            let instructions = Instructions("\(identity) \(voice) \(format) \(bans) \(grounding)")
             return LanguageModelSession(instructions: instructions)
         }
     }
@@ -331,12 +330,12 @@ enum NPCBrain {
         }
 
         let prompt = """
-            It's \(timeOfDay). You're near the \(location); you've been \(speakerActivity.lowercased()) \(speakerActivityDuration).
-            \(listener) (\(listenerRole)) just walked up.\(observationsBlock)\(intentionsBlock)\(relationshipBlock)
+            It's \(timeOfDay). You're at the \(location), \(speakerActivity.lowercased()) \(speakerActivityDuration).
+            \(listener) (\(listenerRole)) is here with you.\(observationsBlock)\(intentionsBlock)\(relationshipBlock)
 
             \(historyBlock)
 
-            Say ONE sentence (under 20 words) grounded in what you're doing right now or something you noticed today. Do not greet generically. Do not write \(listener)'s reply. Do not address yourself. Do not start with "\(speaker):". Output only your single sentence.
+            Say ONE in-character sentence (under 20 words) about something concrete: what you're doing, something you noticed, or something you intend to do. Do not narrate the situation. Do not greet (no "Good morning"). Do not write \(listener)'s reply. Output only your single sentence.
             """
 
         return await respond(npcName: speaker, role: speakerRole, label: "\(speaker) dialogue", prompt: prompt)
@@ -387,10 +386,10 @@ enum NPCBrain {
             : ""
 
         let prompt = """
-            It's \(timeOfDay). You're near the \(location); you've been \(responderActivity.lowercased()) \(responderActivityDuration).
+            It's \(timeOfDay). You're at the \(location), \(responderActivity.lowercased()) \(responderActivityDuration).
             \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
 
-            Say ONE sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing. Do not write \(speaker)'s next line. Do not address yourself. Do not start with "\(responder):".\(closingNote) Output only your single sentence.
+            Say ONE in-character sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing — do not narrate the situation or repeat prompt details. Do not write \(speaker)'s next line.\(closingNote) Output only your single sentence.
             """
 
         return await respond(npcName: responder, role: responderRole, label: "\(responder) response", prompt: prompt)
