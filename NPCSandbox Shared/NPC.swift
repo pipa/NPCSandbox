@@ -81,6 +81,15 @@ class NPC {
     private var chatCooldowns: [String: Int] = [:]
     private let chatCooldownMinutes = 120
 
+    /// First-person intentions produced by last night's reflection. Surfaced into
+    /// dialogue prompts so chats can reference what the NPC decided to do today.
+    var intentions: [String] = []
+
+    /// Per-day random offset (0-9 game-min) added to each schedule entry's
+    /// trigger time so days don't tick on identical clockwork. Regenerated on
+    /// `resetForNewDay`.
+    private var scheduleJitter: [Int: Int] = [:]
+
     init(name: String, role: String, tileID: Int, startPos: GridPosition, schedule: [ScheduleEntry],
          sociability: Double, dialogueColor: SKColor, tileSize: CGFloat, mapRows: Int) {
         self.name = name
@@ -124,7 +133,12 @@ class NPC {
         chatCooldowns.removeAll()
         isInterrupted = false
         currentActivity = ""
+        scheduleJitter = Dictionary(uniqueKeysWithValues: schedule.map { ($0.totalMinutes, Int.random(in: 0...9)) })
         updateLabel()
+    }
+
+    private func triggerMinute(for entry: ScheduleEntry) -> Int {
+        entry.totalMinutes + (scheduleJitter[entry.totalMinutes] ?? 0)
     }
 
     // MARK: - Utility Scoring
@@ -188,7 +202,7 @@ class NPC {
 
         var activeEntry: ScheduleEntry?
         for entry in schedule.reversed() {
-            if now >= entry.totalMinutes {
+            if now >= triggerMinute(for: entry) {
                 activeEntry = entry
                 break
             }
@@ -210,7 +224,7 @@ class NPC {
 
     private func restoreScheduleActivity(clock: GameClock) {
         for entry in schedule.reversed() {
-            if clock.totalMinutes >= entry.totalMinutes {
+            if clock.totalMinutes >= triggerMinute(for: entry) {
                 currentActivity = entry.activity
                 updateLabel()
                 return

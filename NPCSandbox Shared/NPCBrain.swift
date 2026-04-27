@@ -1,6 +1,15 @@
 import Foundation
 import FoundationModels
 
+/// Structured output for end-of-day planning. The model fills 2-3 short
+/// first-person intentions for the next day; we surface these to the NPC
+/// the following morning so chats can reference them.
+@Generable
+struct DailyIntentions {
+    @Guide(description: "2 to 3 short first-person intentions for tomorrow, each one sentence")
+    let intentions: [String]
+}
+
 enum NPCBrain {
 
     private static let dialogueOptions = GenerationOptions(
@@ -160,6 +169,46 @@ enum NPCBrain {
         }
     }
 
+    // MARK: - Intentions
+
+    /// Asks the NPC's session to produce 2-3 first-person intentions for tomorrow,
+    /// based on today's reflection and their usual routine. Returns nil if the
+    /// model errors or guardrails fire.
+    static func generateIntentions(
+        npcName: String,
+        role: String,
+        reflectionText: String,
+        schedule: String
+    ) async -> [String]? {
+        guard isAvailable else { return nil }
+
+        let prompt = """
+            You just reflected on today: \(reflectionText)
+            Your usual routine: \(schedule)
+
+            What 2-3 things do you want to do differently or look forward to tomorrow?
+            Keep each one short, first-person, concrete (a person, place, or task), grounded in your role.
+            Examples: "seek out Mora to ask about the harvest", "rise earlier to start the rye", "linger at the tavern after lunch".
+            """
+
+        print("[LLM] Generating intentions for \(npcName)...")
+        let start = Date()
+        do {
+            let session = await registry.session(for: npcName, role: role)
+            await registry.bumpCallCount(for: npcName)
+            let response = try await session.respond(to: prompt, generating: DailyIntentions.self, options: reflectionOptions)
+            let elapsed = Date().timeIntervalSince(start)
+            print("[LLM] \(npcName) intentions: \(formatSeconds(elapsed))")
+            for line in response.content.intentions {
+                print("[LLM] \(npcName) intends: \(line)")
+            }
+            return response.content.intentions
+        } catch {
+            await handle(error: error, npcName: npcName, label: "intentions")
+            return nil
+        }
+    }
+
     // MARK: - Dialogue
 
     static func generateDialogue(
@@ -172,6 +221,7 @@ enum NPCBrain {
         speakerActivity: String,
         speakerActivityDuration: String,
         speakerObservations: [String],
+        speakerIntentions: [String],
         priorChatsToday: Int,
         chatHistory: [String]
     ) async -> String? {
@@ -180,6 +230,10 @@ enum NPCBrain {
         let observationsBlock = speakerObservations.isEmpty
             ? ""
             : "\nEarlier today you noticed:\n" + speakerObservations.joined(separator: "\n")
+
+        let intentionsBlock = speakerIntentions.isEmpty
+            ? ""
+            : "\nLast night you decided:\n" + speakerIntentions.map { "- \($0)" }.joined(separator: "\n")
 
         let historyBlock: String
         if priorChatsToday == 0 {
@@ -196,7 +250,7 @@ enum NPCBrain {
 
         let prompt = """
             It's \(timeOfDay). You're near the \(location); you've been \(speakerActivity.lowercased()) \(speakerActivityDuration).
-            \(listener) (\(listenerRole)) just walked up.\(observationsBlock)
+            \(listener) (\(listenerRole)) just walked up.\(observationsBlock)\(intentionsBlock)
 
             \(historyBlock)
 
@@ -216,6 +270,7 @@ enum NPCBrain {
         responderActivity: String,
         responderActivityDuration: String,
         responderObservations: [String],
+        responderIntentions: [String],
         previousLine: String,
         chatHistory: [String],
         isFinal: Bool = false
@@ -225,6 +280,10 @@ enum NPCBrain {
         let observationsBlock = responderObservations.isEmpty
             ? ""
             : "\nEarlier today you noticed:\n" + responderObservations.joined(separator: "\n")
+
+        let intentionsBlock = responderIntentions.isEmpty
+            ? ""
+            : "\nLast night you decided:\n" + responderIntentions.map { "- \($0)" }.joined(separator: "\n")
 
         let historyBlock: String
         if chatHistory.isEmpty {
@@ -244,7 +303,7 @@ enum NPCBrain {
 
         let prompt = """
             It's \(timeOfDay). You're near the \(location); you've been \(responderActivity.lowercased()) \(responderActivityDuration).
-            \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(historyBlock)
+            \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(intentionsBlock)\(historyBlock)
 
             Say ONE sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing. Do not write \(speaker)'s next line. Do not address yourself.\(closingNote) Output only your single sentence.
             """

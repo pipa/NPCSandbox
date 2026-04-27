@@ -433,6 +433,8 @@ class GameScene: SKScene {
         let listenerActivityDuration = listener.activityDurationDescription(currentMinutes: now)
         let speakerObservations = speaker.memory.recentObservations()
         let listenerObservations = listener.memory.recentObservations()
+        let speakerIntentions = speaker.intentions
+        let listenerIntentions = listener.intentions
         let speakerHistory = speaker.memory.recentChatHistory(with: listenerName)
         let priorChats = speaker.memory.chatSessionCount(with: listenerName)
         let timeOfDay = gameClock.timeString
@@ -468,6 +470,7 @@ class GameScene: SKScene {
                     speakerActivity: speakerActivity,
                     speakerActivityDuration: speakerActivityDuration,
                     speakerObservations: speakerObservations,
+                    speakerIntentions: speakerIntentions,
                     priorChatsToday: priorChats,
                     chatHistory: speakerHistory
                 ) ?? "Good day!"
@@ -495,6 +498,7 @@ class GameScene: SKScene {
                     let responderActivity = responderIsListener ? listenerActivity : speakerActivity
                     let responderActivityDuration = responderIsListener ? listenerActivityDuration : speakerActivityDuration
                     let responderObservations = responderIsListener ? listenerObservations : speakerObservations
+                    let responderIntentions = responderIsListener ? listenerIntentions : speakerIntentions
                     let nextResponderName = responderIsListener ? speakerName : listenerName
                     let nextResponderColor = responderIsListener ? speakerColor : listenerColor
                     let isFinal = (turnIndex == turnCount - 1)
@@ -512,6 +516,7 @@ class GameScene: SKScene {
                         responderActivity: responderActivity,
                         responderActivityDuration: responderActivityDuration,
                         responderObservations: responderObservations,
+                        responderIntentions: responderIntentions,
                         previousLine: prevLine,
                         chatHistory: inSessionHistory,
                         isFinal: isFinal
@@ -718,13 +723,25 @@ class GameScene: SKScene {
                 let schedule = npc.scheduleDescription
                 let npcName = npc.name
                 let npcRole = npc.role
-                Task.detached {
-                    _ = await NPCBrain.generateReflection(
+                Task.detached { [weak npc] in
+                    let reflection = await NPCBrain.generateReflection(
                         npcName: npcName,
                         role: npcRole,
                         schedule: schedule,
                         memories: memories
                     )
+                    guard let reflection else { return }
+                    let intentions = await NPCBrain.generateIntentions(
+                        npcName: npcName,
+                        role: npcRole,
+                        reflectionText: reflection,
+                        schedule: schedule
+                    )
+                    if let intentions {
+                        await MainActor.run { [weak npc] in
+                            npc?.intentions = intentions
+                        }
+                    }
                 }
             }
             print("---\n")
