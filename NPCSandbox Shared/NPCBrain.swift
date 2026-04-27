@@ -35,52 +35,83 @@ enum NPCBrain {
         maximumResponseTokens: 220
     )
 
-    /// Per-NPC session registry. Each NPC gets a `LanguageModelSession` whose
-    /// `Instructions` carry the role — so the role tokenizes once and is reused
-    /// for every prompt. Sessions are recycled after a bounded number of calls
-    /// or on error to keep transcript growth in check.
-    private actor SessionRegistry {
-        private struct Slot {
-            var session: LanguageModelSession
-            var callsSinceFresh: Int
+    /// One actor per NPC owns that NPC's `LanguageModelSession`. Calls into
+    /// `respond` / `respondGenerable` serialize through the actor — Apple's
+    /// model only allows one in-flight request per session, and a per-NPC
+    /// actor enforces that *without* serializing across different NPCs (so
+    /// two NPCs can be rated in parallel).
+    private actor NPCSession {
+        private static let recreateAfterCalls = 8
+
+        private let npcName: String
+        private let role: String
+        private var session: LanguageModelSession
+        private var callsSinceFresh = 0
+
+        init(npcName: String, role: String) {
+            self.npcName = npcName
+            self.role = role
+            self.session = NPCSession.makeSession(npcName: npcName, role: role)
+            self.session.prewarm()
         }
 
-        private let recreateAfterCalls = 8
-        private var slots: [String: Slot] = [:]
+        func respondString(prompt: String, options: GenerationOptions) async throws -> String {
+            ensureFresh()
+            callsSinceFresh += 1
+            let response = try await session.respond(to: prompt, options: options)
+            return response.content
+        }
 
-        func session(for npcName: String, role: String) -> LanguageModelSession {
-            if let existing = slots[npcName], existing.callsSinceFresh < recreateAfterCalls {
-                return existing.session
+        func respondGenerable<T: Generable & Sendable>(prompt: String, type: T.Type, options: GenerationOptions) async throws -> T {
+            ensureFresh()
+            callsSinceFresh += 1
+            let response = try await session.respond(to: prompt, generating: type, options: options)
+            return response.content
+        }
+
+        func invalidate() {
+            session = NPCSession.makeSession(npcName: npcName, role: role)
+            session.prewarm()
+            callsSinceFresh = 0
+        }
+
+        func warmUp() {
+            // session is already prewarmed in init; this is a no-op but exists
+            // so callers can `await` warm-up completion.
+        }
+
+        private func ensureFresh() {
+            if callsSinceFresh >= NPCSession.recreateAfterCalls {
+                invalidate()
             }
-            let fresh = makeSession(npcName: npcName, role: role)
-            fresh.prewarm()
-            slots[npcName] = Slot(session: fresh, callsSinceFresh: 0)
-            return fresh
         }
 
-        func bumpCallCount(for npcName: String) {
-            guard var slot = slots[npcName] else { return }
-            slot.callsSinceFresh += 1
-            slots[npcName] = slot
-        }
-
-        func invalidate(_ npcName: String) {
-            slots.removeValue(forKey: npcName)
-        }
-
-        func warmUp(npcName: String, role: String) {
-            _ = session(for: npcName, role: role)
-        }
-
-        private func makeSession(npcName: String, role: String) -> LanguageModelSession {
+        private static func makeSession(npcName: String, role: String) -> LanguageModelSession {
             let instructions = Instructions(
                 "Your name is \(npcName). You are \(role) in a small medieval town. " +
                 "You speak ONLY as \(npcName). You never speak for or address yourself; " +
                 "you never write the other person's reply; you never produce more than one sentence at a time. " +
                 "Reply with a single short sentence — under 20 words, no quotes, no stage directions, " +
-                "no closing salutations. Stay grounded in what you are actually doing right now."
+                "no closing salutations, no name prefix like 'Mora:'. Stay grounded in what you are actually doing right now."
             )
             return LanguageModelSession(instructions: instructions)
+        }
+    }
+
+    /// Holds one NPCSession actor per NPC so callers can grab the right one
+    /// in O(1) and have its calls serialize.
+    private actor SessionRegistry {
+        private var sessions: [String: NPCSession] = [:]
+
+        func session(for npcName: String, role: String) -> NPCSession {
+            if let existing = sessions[npcName] { return existing }
+            let fresh = NPCSession(npcName: npcName, role: role)
+            sessions[npcName] = fresh
+            return fresh
+        }
+
+        func invalidate(_ npcName: String) async {
+            if let s = sessions[npcName] { await s.invalidate() }
         }
     }
 
@@ -118,7 +149,8 @@ enum NPCBrain {
     static func warmUp(npcName: String, role: String) {
         guard isAvailable else { return }
         Task.detached {
-            await registry.warmUp(npcName: npcName, role: role)
+            let s = await registry.session(for: npcName, role: role)
+            await s.warmUp()
             print("[LLM] Session prewarmed for \(npcName)")
         }
     }
@@ -127,17 +159,29 @@ enum NPCBrain {
         String(format: "%.1fs", seconds)
     }
 
-    /// The model sometimes ignores "one sentence" and produces a full back-and-forth
-    /// in a single response. Take only the first non-empty line, then chop at the
-    /// first sentence boundary so we never emit the imagined reply.
-    private static func cleanLine(_ raw: String) -> String {
+    /// Strip the model's bad habits from a raw line:
+    /// - take only the first non-empty line
+    /// - strip leading/trailing quotes and whitespace
+    /// - strip any leading "<npcName>:" prefix (repeated, since the model can nest them)
+    /// - cap at the first sentence terminator so a stray follow-up gets dropped.
+    private static func cleanLine(_ raw: String, npcName: String) -> String {
         let firstLine = raw
             .components(separatedBy: .newlines)
             .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
         var trimmed = firstLine.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
 
-        // Chop at the first sentence terminator so a stray "Good day, Gareth."
-        // tacked on after the real line gets dropped.
+        let prefix = "\(npcName):"
+        while true {
+            let stripped = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
+            if stripped.lowercased().hasPrefix(prefix.lowercased()) {
+                trimmed = String(stripped.dropFirst(prefix.count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
+            } else {
+                trimmed = stripped
+                break
+            }
+        }
+
         let terminators: [Character] = [".", "!", "?"]
         if let firstTerminator = trimmed.firstIndex(where: { terminators.contains($0) }) {
             let endIdx = trimmed.index(after: firstTerminator)
@@ -169,12 +213,11 @@ enum NPCBrain {
         let start = Date()
         do {
             let session = await registry.session(for: npcName, role: role)
-            await registry.bumpCallCount(for: npcName)
-            let response = try await session.respond(to: prompt, options: reflectionOptions)
+            let content = try await session.respondString(prompt: prompt, options: reflectionOptions)
             let elapsed = Date().timeIntervalSince(start)
             print("[LLM] \(npcName) reflection: \(formatSeconds(elapsed))")
-            print("[LLM] \(npcName) reflects: \(response.content)")
-            return response.content
+            print("[LLM] \(npcName) reflects: \(content)")
+            return content
         } catch {
             await handle(error: error, npcName: npcName, label: "reflection")
             return nil
@@ -183,9 +226,6 @@ enum NPCBrain {
 
     // MARK: - Intentions
 
-    /// Asks the NPC's session to produce 2-3 first-person intentions for tomorrow,
-    /// based on today's reflection and their usual routine. Returns nil if the
-    /// model errors or guardrails fire.
     static func generateIntentions(
         npcName: String,
         role: String,
@@ -207,14 +247,13 @@ enum NPCBrain {
         let start = Date()
         do {
             let session = await registry.session(for: npcName, role: role)
-            await registry.bumpCallCount(for: npcName)
-            let response = try await session.respond(to: prompt, generating: DailyIntentions.self, options: reflectionOptions)
+            let result = try await session.respondGenerable(prompt: prompt, type: DailyIntentions.self, options: reflectionOptions)
             let elapsed = Date().timeIntervalSince(start)
             print("[LLM] \(npcName) intentions: \(formatSeconds(elapsed))")
-            for line in response.content.intentions {
+            for line in result.intentions {
                 print("[LLM] \(npcName) intends: \(line)")
             }
-            return response.content.intentions
+            return result.intentions
         } catch {
             await handle(error: error, npcName: npcName, label: "intentions")
             return nil
@@ -223,7 +262,6 @@ enum NPCBrain {
 
     // MARK: - Chat rating
 
-    /// Asks the NPC's session to rate the just-finished exchange.
     static func rateExchange(
         npcName: String,
         role: String,
@@ -241,9 +279,7 @@ enum NPCBrain {
 
         do {
             let session = await registry.session(for: npcName, role: role)
-            await registry.bumpCallCount(for: npcName)
-            let response = try await session.respond(to: prompt, generating: ChatRating.self, options: reflectionOptions)
-            let rating = response.content
+            let rating = try await session.respondGenerable(prompt: prompt, type: ChatRating.self, options: reflectionOptions)
             print("[LLM] \(npcName) rates chat with \(partner): \(rating.affinity) (\(rating.summary))")
             return rating
         } catch {
@@ -300,7 +336,7 @@ enum NPCBrain {
 
             \(historyBlock)
 
-            Say ONE sentence (under 20 words) grounded in what you're doing right now or something you noticed today. Do not greet generically. Do not write \(listener)'s reply. Do not address yourself. Output only your single sentence.
+            Say ONE sentence (under 20 words) grounded in what you're doing right now or something you noticed today. Do not greet generically. Do not write \(listener)'s reply. Do not address yourself. Do not start with "\(speaker):". Output only your single sentence.
             """
 
         return await respond(npcName: speaker, role: speakerRole, label: "\(speaker) dialogue", prompt: prompt)
@@ -354,7 +390,7 @@ enum NPCBrain {
             It's \(timeOfDay). You're near the \(location); you've been \(responderActivity.lowercased()) \(responderActivityDuration).
             \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
 
-            Say ONE sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing. Do not write \(speaker)'s next line. Do not address yourself.\(closingNote) Output only your single sentence.
+            Say ONE sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing. Do not write \(speaker)'s next line. Do not address yourself. Do not start with "\(responder):".\(closingNote) Output only your single sentence.
             """
 
         return await respond(npcName: responder, role: responderRole, label: "\(responder) response", prompt: prompt)
@@ -365,10 +401,9 @@ enum NPCBrain {
         let start = Date()
         do {
             let session = await registry.session(for: npcName, role: role)
-            await registry.bumpCallCount(for: npcName)
-            let response = try await session.respond(to: prompt, options: dialogueOptions)
+            let content = try await session.respondString(prompt: prompt, options: dialogueOptions)
             let total = Date().timeIntervalSince(start)
-            let cleaned = cleanLine(response.content)
+            let cleaned = cleanLine(content, npcName: npcName)
             print("[LLM] \(label): total \(formatSeconds(total))")
             print("[LLM] [DLG] \(npcName): \"\(cleaned)\"")
             return cleaned.isEmpty ? nil : cleaned
