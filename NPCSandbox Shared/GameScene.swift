@@ -500,6 +500,8 @@ class GameScene: SKScene {
         let listenerObservations = listener.memory.recentObservations()
         let speakerIntentions = speaker.intentions
         let listenerIntentions = listener.intentions
+        let speakerRelationshipNote = speaker.relationshipNote(with: listenerName)
+        let listenerRelationshipNote = listener.relationshipNote(with: speakerName)
         let speakerHistory = speaker.memory.recentChatHistory(with: listenerName)
         let priorChats = speaker.memory.chatSessionCount(with: listenerName)
         let timeOfDay = gameClock.timeString
@@ -536,6 +538,7 @@ class GameScene: SKScene {
                     speakerActivityDuration: speakerActivityDuration,
                     speakerObservations: speakerObservations,
                     speakerIntentions: speakerIntentions,
+                    relationshipNote: speakerRelationshipNote,
                     priorChatsToday: priorChats,
                     chatHistory: speakerHistory
                 ) ?? "Good day!"
@@ -564,6 +567,7 @@ class GameScene: SKScene {
                     let responderActivityDuration = responderIsListener ? listenerActivityDuration : speakerActivityDuration
                     let responderObservations = responderIsListener ? listenerObservations : speakerObservations
                     let responderIntentions = responderIsListener ? listenerIntentions : speakerIntentions
+                    let responderRelationshipNote = responderIsListener ? listenerRelationshipNote : speakerRelationshipNote
                     let nextResponderName = responderIsListener ? speakerName : listenerName
                     let nextResponderColor = responderIsListener ? speakerColor : listenerColor
                     let isFinal = (turnIndex == turnCount - 1)
@@ -582,6 +586,7 @@ class GameScene: SKScene {
                         responderActivityDuration: responderActivityDuration,
                         responderObservations: responderObservations,
                         responderIntentions: responderIntentions,
+                        relationshipNote: responderRelationshipNote,
                         previousLine: prevLine,
                         chatHistory: inSessionHistory,
                         isFinal: isFinal
@@ -606,6 +611,30 @@ class GameScene: SKScene {
                         print("[\(timeStr)] [DLG] \(entry.speaker): \"\(entry.line)\"")
                         speaker?.memory.logDialogue(speaker: entry.speaker, partner: listenerName, line: entry.line, at: timeStr)
                         listener?.memory.logDialogue(speaker: entry.speaker, partner: speakerName, line: entry.line, at: timeStr)
+                    }
+                }
+
+                // Fire-and-forget sentiment rating in the background. Each NPC
+                // rates the exchange from their own session; results land on
+                // the NPC asynchronously so the UI dismiss isn't delayed.
+                let transcriptStrings = finalTranscript.map { "\($0.speaker): \"\($0.line)\"" }
+                Task.detached { [weak speaker, weak listener] in
+                    async let speakerRating = NPCBrain.rateExchange(
+                        npcName: speakerName, role: speakerRole,
+                        partner: listenerName, transcript: transcriptStrings
+                    )
+                    async let listenerRating = NPCBrain.rateExchange(
+                        npcName: listenerName, role: listenerRole,
+                        partner: speakerName, transcript: transcriptStrings
+                    )
+                    let (sRating, lRating) = await (speakerRating, listenerRating)
+                    await MainActor.run { [weak speaker, weak listener] in
+                        if let r = sRating {
+                            speaker?.recordChatRating(partner: listenerName, affinity: r.affinity, summary: r.summary)
+                        }
+                        if let r = lRating {
+                            listener?.recordChatRating(partner: speakerName, affinity: r.affinity, summary: r.summary)
+                        }
                     }
                 }
 

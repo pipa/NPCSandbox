@@ -10,6 +10,18 @@ struct DailyIntentions {
     let intentions: [String]
 }
 
+/// Post-chat sentiment rating, run once per NPC per chat. Affinity drives
+/// future social utility; summary is a short relationship-state phrase fed
+/// into later dialogue prompts.
+@Generable
+struct ChatRating {
+    @Guide(description: "How the exchange felt to you: -2 (tense or cold), -1 (slightly off), 0 (neutral), 1 (friendly), 2 (warm or close)")
+    let affinity: Int
+
+    @Guide(description: "Three to six words describing your standing with this person now, e.g. 'old friends', 'cordial colleagues', 'a touch awkward'")
+    let summary: String
+}
+
 enum NPCBrain {
 
     private static let dialogueOptions = GenerationOptions(
@@ -209,6 +221,37 @@ enum NPCBrain {
         }
     }
 
+    // MARK: - Chat rating
+
+    /// Asks the NPC's session to rate the just-finished exchange.
+    static func rateExchange(
+        npcName: String,
+        role: String,
+        partner: String,
+        transcript: [String]
+    ) async -> ChatRating? {
+        guard isAvailable else { return nil }
+
+        let prompt = """
+            You just had this conversation with \(partner):
+            \(transcript.joined(separator: "\n"))
+
+            From your perspective, how did it feel? Provide an integer affinity in [-2, 2] and a short summary phrase of where the relationship stands now.
+            """
+
+        do {
+            let session = await registry.session(for: npcName, role: role)
+            await registry.bumpCallCount(for: npcName)
+            let response = try await session.respond(to: prompt, generating: ChatRating.self, options: reflectionOptions)
+            let rating = response.content
+            print("[LLM] \(npcName) rates chat with \(partner): \(rating.affinity) (\(rating.summary))")
+            return rating
+        } catch {
+            await handle(error: error, npcName: npcName, label: "rating")
+            return nil
+        }
+    }
+
     // MARK: - Dialogue
 
     static func generateDialogue(
@@ -222,6 +265,7 @@ enum NPCBrain {
         speakerActivityDuration: String,
         speakerObservations: [String],
         speakerIntentions: [String],
+        relationshipNote: String?,
         priorChatsToday: Int,
         chatHistory: [String]
     ) async -> String? {
@@ -234,6 +278,8 @@ enum NPCBrain {
         let intentionsBlock = speakerIntentions.isEmpty
             ? ""
             : "\nLast night you decided:\n" + speakerIntentions.map { "- \($0)" }.joined(separator: "\n")
+
+        let relationshipBlock = relationshipNote.map { "\nYour standing with \(listener): \($0)." } ?? ""
 
         let historyBlock: String
         if priorChatsToday == 0 {
@@ -250,7 +296,7 @@ enum NPCBrain {
 
         let prompt = """
             It's \(timeOfDay). You're near the \(location); you've been \(speakerActivity.lowercased()) \(speakerActivityDuration).
-            \(listener) (\(listenerRole)) just walked up.\(observationsBlock)\(intentionsBlock)
+            \(listener) (\(listenerRole)) just walked up.\(observationsBlock)\(intentionsBlock)\(relationshipBlock)
 
             \(historyBlock)
 
@@ -271,6 +317,7 @@ enum NPCBrain {
         responderActivityDuration: String,
         responderObservations: [String],
         responderIntentions: [String],
+        relationshipNote: String?,
         previousLine: String,
         chatHistory: [String],
         isFinal: Bool = false
@@ -284,6 +331,8 @@ enum NPCBrain {
         let intentionsBlock = responderIntentions.isEmpty
             ? ""
             : "\nLast night you decided:\n" + responderIntentions.map { "- \($0)" }.joined(separator: "\n")
+
+        let relationshipBlock = relationshipNote.map { "\nYour standing with \(speaker): \($0)." } ?? ""
 
         let historyBlock: String
         if chatHistory.isEmpty {
@@ -303,7 +352,7 @@ enum NPCBrain {
 
         let prompt = """
             It's \(timeOfDay). You're near the \(location); you've been \(responderActivity.lowercased()) \(responderActivityDuration).
-            \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(intentionsBlock)\(historyBlock)
+            \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
 
             Say ONE sentence (under 20 words) reacting to what \(speaker) said. Stay grounded in what you're doing. Do not write \(speaker)'s next line. Do not address yourself.\(closingNote) Output only your single sentence.
             """

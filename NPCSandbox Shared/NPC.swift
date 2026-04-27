@@ -85,6 +85,38 @@ class NPC {
     /// dialogue prompts so chats can reference what the NPC decided to do today.
     var intentions: [String] = []
 
+    /// Per-partner relationship state — cumulative warmth and a short tag —
+    /// updated after each chat by an @Generable rating call.
+    struct RelationshipState: Sendable {
+        var totalChats: Int = 0
+        var sentiment: Int = 0      // running, clamped to [-10, 10]
+        var summary: String = ""    // last short phrase the model produced
+    }
+    private(set) var relationships: [String: RelationshipState] = [:]
+
+    func recordChatRating(partner: String, affinity: Int, summary: String) {
+        var state = relationships[partner] ?? RelationshipState()
+        state.totalChats += 1
+        state.sentiment = max(-10, min(10, state.sentiment + affinity))
+        if !summary.isEmpty { state.summary = summary }
+        relationships[partner] = state
+    }
+
+    /// Short hint for dialogue prompts so the model knows the existing
+    /// relationship — nil if they've never spoken.
+    func relationshipNote(with otherName: String) -> String? {
+        guard let state = relationships[otherName], state.totalChats > 0 else { return nil }
+        let warmth: String
+        switch state.sentiment {
+        case ..<(-2): warmth = "tense"
+        case -2 ... -1: warmth = "a bit cool"
+        case 0: warmth = "cordial"
+        case 1 ... 2: warmth = "warm"
+        default: warmth = "very close"
+        }
+        return state.summary.isEmpty ? warmth : "\(warmth) — \(state.summary)"
+    }
+
     /// Per-day random offset (0-9 game-min) added to each schedule entry's
     /// trigger time so days don't tick on identical clockwork. Regenerated on
     /// `resetForNewDay`.
@@ -160,6 +192,13 @@ class NPC {
         // schedule-utility threshold even when cooldown decay would block it.
         if intentionsName(other) {
             utility *= 1.6
+        }
+
+        // Relationship sentiment: warm pairs hover above the threshold longer;
+        // cool pairs drift apart. ±10 sentiment maps to ±50% utility, clamped.
+        if let state = relationships[other.name] {
+            let factor = 1.0 + Double(state.sentiment) * 0.05
+            utility *= max(0.5, min(1.5, factor))
         }
 
         return utility
