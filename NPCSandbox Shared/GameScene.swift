@@ -456,7 +456,11 @@ class GameScene: SKScene {
         lastUpdateTime = currentTime
 
         let isNight = gameClock.hour >= 22 || gameClock.hour < 6
-        gameClock.minutesPerSecond = isNight ? 60.0 : 5.0
+        // Night speed of 20 game-min/sec gives ~24s real-time for the
+        // 22:00 -> 06:00 stretch, comfortably matching the time it takes
+        // for reflection + intentions to land on each NPC's session.
+        // Day stays at 5 game-min/sec so the visible action paces normally.
+        gameClock.minutesPerSecond = isNight ? 20.0 : 5.0
 
         // While the player is talking with an NPC the world holds still —
         // schedules don't advance, the clock doesn't tick, no other chats

@@ -8,6 +8,9 @@ import FoundationModels
 struct DailyIntentions {
     @Guide(description: "2 to 3 short first-person intentions for tomorrow, each one sentence")
     let intentions: [String]
+
+    @Guide(description: "If you intend to rise earlier or sleep in tomorrow, the shift in minutes (negative for earlier, positive for later, 0 for no change). Range -45 to 45.")
+    let wakeShiftMinutes: Int
 }
 
 /// Post-chat sentiment rating, run once per NPC per chat. Affinity drives

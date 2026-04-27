@@ -82,8 +82,15 @@ class NPC {
     private let chatCooldownMinutes = 120
 
     /// First-person intentions produced by last night's reflection. Surfaced into
-    /// dialogue prompts so chats can reference what the NPC decided to do today.
-    var intentions: [String] = []
+    /// dialogue prompts AND parsed into schedule shifts so the day's rhythm
+    /// actually deviates when intentions call for it.
+    var intentions: [String] = [] {
+        didSet { applyIntentionsToSchedule() }
+    }
+
+    /// Per-entry minute offsets derived from `intentions`. Combined with
+    /// `scheduleJitter` in `triggerMinute(for:)` to compute when an entry fires.
+    private(set) var scheduleShifts: [Int: Int] = [:]
 
     /// Per-partner relationship state — cumulative warmth and a short tag —
     /// updated after each chat by an @Generable rating call.
@@ -170,7 +177,49 @@ class NPC {
     }
 
     private func triggerMinute(for entry: ScheduleEntry) -> Int {
-        entry.totalMinutes + (scheduleJitter[entry.totalMinutes] ?? 0)
+        entry.totalMinutes
+            + (scheduleJitter[entry.totalMinutes] ?? 0)
+            + (scheduleShifts[entry.totalMinutes] ?? 0)
+    }
+
+    /// Translate today's intentions into schedule shifts via keyword match.
+    /// Best-effort: catches the obvious shapes ("rise earlier", "linger after
+    /// lunch", "late evening") and ignores the rest.
+    private func applyIntentionsToSchedule() {
+        scheduleShifts.removeAll()
+        guard !intentions.isEmpty else { return }
+        let text = intentions.joined(separator: " ").lowercased()
+
+        if text.contains("earlier") || text.contains("before dawn") || text.contains("at dawn") || text.contains("rise early") {
+            if let first = schedule.first {
+                scheduleShifts[first.totalMinutes, default: 0] -= 20
+            }
+        }
+
+        if text.contains("linger") || text.contains("longer") || text.contains("stay") {
+            for (i, entry) in schedule.enumerated() where i < schedule.count - 1 {
+                let lastWord = entry.activity.lowercased().split(separator: " ").last.map(String.init) ?? ""
+                if !lastWord.isEmpty && text.contains(lastWord) {
+                    let next = schedule[i + 1]
+                    scheduleShifts[next.totalMinutes, default: 0] += 25
+                    break
+                }
+            }
+        }
+
+        if text.contains("late evening") || text.contains("after dinner") || text.contains("late at night") {
+            if let last = schedule.last {
+                scheduleShifts[last.totalMinutes, default: 0] += 30
+            }
+        }
+
+        if !scheduleShifts.isEmpty {
+            let summary = scheduleShifts
+                .sorted { $0.key < $1.key }
+                .map { String(format: "%02d:%02d %@%d", $0.key / 60, $0.key % 60, $0.value >= 0 ? "+" : "", $0.value) }
+                .joined(separator: ", ")
+            print("[\(name)] schedule shifts from intentions: \(summary)")
+        }
     }
 
     // MARK: - Utility Scoring
