@@ -48,13 +48,15 @@ enum NPCBrain {
 
         private let npcName: String
         private let role: String
+        private let personality: String
         private var session: LanguageModelSession
         private var callsSinceFresh = 0
 
-        init(npcName: String, role: String) {
+        init(npcName: String, role: String, personality: String) {
             self.npcName = npcName
             self.role = role
-            self.session = NPCSession.makeSession(npcName: npcName, role: role)
+            self.personality = personality
+            self.session = NPCSession.makeSession(npcName: npcName, role: role, personality: personality)
             self.session.prewarm()
         }
 
@@ -73,7 +75,7 @@ enum NPCBrain {
         }
 
         func invalidate() {
-            session = NPCSession.makeSession(npcName: npcName, role: role)
+            session = NPCSession.makeSession(npcName: npcName, role: role, personality: personality)
             session.prewarm()
             callsSinceFresh = 0
         }
@@ -89,15 +91,15 @@ enum NPCBrain {
             }
         }
 
-        private static func makeSession(npcName: String, role: String) -> LanguageModelSession {
+        private static func makeSession(npcName: String, role: String, personality: String) -> LanguageModelSession {
             let identity = "Your name is \(npcName). You are \(role) in a small medieval town."
-            let world = "The town has only three places: a bakery (Elara's), a tavern (Mora's), and farm fields with a farmhouse (Gareth's). There is no market, blacksmith, mill, smithy, harbor, church, or any other place — never refer to them. The only people are Elara, Mora, and Gareth."
-            let outputRule = "Your output is the LITERAL WORDS YOU SPEAK OUT LOUD — exactly what someone standing nearby would hear. It is NOT a description, NOT narration, NOT a stage direction."
-            let narrationBan = "NEVER write narration like 'I smile', 'I notice', 'I walk', 'I continue', 'X greets me', 'X smiles', 'X is about to', 'I'm grateful'. Those describe actions and feelings — they are wrong. Speak the dialogue line only."
-            let format = "Reply with one short in-character sentence — under 20 words. No quotes, no parentheticals, no name prefix like '\(npcName):'."
-            let bans = "Never greet ('Good morning', 'Hello', 'Good day'). Never close ('have a lovely day', 'see you', 'good day to you')."
-            let grounding = "Ground every line in what you are actually doing right now or something concrete you noticed today."
-            let instructions = Instructions("\(identity) \(world) \(outputRule) \(narrationBan) \(format) \(bans) \(grounding)")
+            let voice = "Personality: \(personality). Speak in YOUR voice — opinionated, specific, sometimes cranky, dry, gossipy, proud, complaining, or teasing — whatever fits your personality. Do NOT default to polite small talk."
+            let world = "The town has only three places: a bakery (Elara's), a tavern (Mora's), and farm fields with a farmhouse (Gareth's). There is no market, blacksmith, mill, smithy, harbor, church, or any other place. The only people are Elara, Mora, Gareth, and occasionally a wandering visitor. Never invent other places or people."
+            let outputRule = "Your output is the LITERAL WORDS YOU SPEAK OUT LOUD — what someone standing nearby would hear. NOT description, NOT narration, NOT a stage direction."
+            let narrationBan = "NEVER write 'I smile', 'I notice', 'I walk', 'X greets me', 'X smiles', 'X continues'. Those are narration — wrong. Speak the dialogue itself."
+            let format = "One short in-character sentence — under 20 words. No quotes, no parentheticals, no name prefix like '\(npcName):'."
+            let opener = "Don't open with generic greetings ('Good morning', 'Hello'). Start mid-thought — react to what's happening, comment on something specific you saw, share an opinion, or grumble about something concrete."
+            let instructions = Instructions("\(identity) \(voice) \(world) \(outputRule) \(narrationBan) \(format) \(opener)")
             return LanguageModelSession(instructions: instructions)
         }
     }
@@ -107,9 +109,9 @@ enum NPCBrain {
     private actor SessionRegistry {
         private var sessions: [String: NPCSession] = [:]
 
-        func session(for npcName: String, role: String) -> NPCSession {
+        func session(for npcName: String, role: String, personality: String) -> NPCSession {
             if let existing = sessions[npcName] { return existing }
-            let fresh = NPCSession(npcName: npcName, role: role)
+            let fresh = NPCSession(npcName: npcName, role: role, personality: personality)
             sessions[npcName] = fresh
             return fresh
         }
@@ -150,10 +152,10 @@ enum NPCBrain {
         return _modelAvailable
     }
 
-    static func warmUp(npcName: String, role: String) {
+    static func warmUp(npcName: String, role: String, personality: String) {
         guard isAvailable else { return }
         Task.detached {
-            let s = await registry.session(for: npcName, role: role)
+            let s = await registry.session(for: npcName, role: role, personality: personality)
             await s.warmUp()
             print("[LLM] Session prewarmed for \(npcName)")
         }
@@ -199,6 +201,7 @@ enum NPCBrain {
     static func generateReflection(
         npcName: String,
         role: String,
+        personality: String,
         schedule: String,
         memories: [String]
     ) async -> String? {
@@ -216,7 +219,7 @@ enum NPCBrain {
         print("[LLM] Generating reflection for \(npcName)...")
         let start = Date()
         do {
-            let session = await registry.session(for: npcName, role: role)
+            let session = await registry.session(for: npcName, role: role, personality: personality)
             let content = try await session.respondString(prompt: prompt, options: reflectionOptions)
             let elapsed = Date().timeIntervalSince(start)
             print("[LLM] \(npcName) reflection: \(formatSeconds(elapsed))")
@@ -233,6 +236,7 @@ enum NPCBrain {
     static func generateIntentions(
         npcName: String,
         role: String,
+        personality: String,
         reflectionText: String,
         schedule: String
     ) async -> [String]? {
@@ -250,7 +254,7 @@ enum NPCBrain {
         print("[LLM] Generating intentions for \(npcName)...")
         let start = Date()
         do {
-            let session = await registry.session(for: npcName, role: role)
+            let session = await registry.session(for: npcName, role: role, personality: personality)
             let result = try await session.respondGenerable(prompt: prompt, type: DailyIntentions.self, options: reflectionOptions)
             let elapsed = Date().timeIntervalSince(start)
             print("[LLM] \(npcName) intentions: \(formatSeconds(elapsed))")
@@ -269,6 +273,7 @@ enum NPCBrain {
     static func rateExchange(
         npcName: String,
         role: String,
+        personality: String,
         partner: String,
         transcript: [String]
     ) async -> ChatRating? {
@@ -282,7 +287,7 @@ enum NPCBrain {
             """
 
         do {
-            let session = await registry.session(for: npcName, role: role)
+            let session = await registry.session(for: npcName, role: role, personality: personality)
             let rating = try await session.respondGenerable(prompt: prompt, type: ChatRating.self, options: reflectionOptions)
             print("[LLM] \(npcName) rates chat with \(partner): \(rating.affinity) (\(rating.summary))")
             return rating
@@ -300,6 +305,8 @@ enum NPCBrain {
     static func respondToPlayer(
         npcName: String,
         role: String,
+        personality: String,
+        mood: String,
         location: String,
         timeOfDay: String,
         npcActivity: String,
@@ -328,13 +335,13 @@ enum NPCBrain {
         }
 
         let prompt = """
-            It's \(timeOfDay). You're at the \(location), \(npcActivity.lowercased()) \(npcActivityDuration).
+            It's \(timeOfDay). You're at the \(location), \(npcActivity.lowercased()) \(npcActivityDuration). You feel \(mood).
             A visitor — a stranger to the village — is here speaking with you. They just said: "\(playerMessage)"\(observationsBlock)\(intentionsBlock)\(historyBlock)
 
-            Reply to the visitor with one short sentence — the actual words you'd say out loud. Stay in character as \(npcName) the \(role). Do NOT narrate. Output only the spoken line.
+            Reply with one short sentence — the actual words you'd say out loud, in your character's voice. React to what they actually said. Don't narrate. Output only the spoken line.
             """
 
-        return await respond(npcName: npcName, role: role, label: "\(npcName) -> visitor", prompt: prompt)
+        return await respond(npcName: npcName, role: role, personality: personality, label: "\(npcName) -> visitor", prompt: prompt)
     }
 
     // MARK: - Dialogue
@@ -342,6 +349,8 @@ enum NPCBrain {
     static func generateDialogue(
         speaker: String,
         speakerRole: String,
+        speakerPersonality: String,
+        speakerMood: String,
         listener: String,
         listenerRole: String,
         othersPresent: [String] = [],
@@ -385,20 +394,22 @@ enum NPCBrain {
             : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") also here."
 
         let prompt = """
-            It's \(timeOfDay). You're at the \(location), \(speakerActivity.lowercased()) \(speakerActivityDuration).
+            It's \(timeOfDay). You're at the \(location), \(speakerActivity.lowercased()) \(speakerActivityDuration). You feel \(speakerMood).
             \(listener) (\(listenerRole)) is here with you.\(othersBlock)\(observationsBlock)\(intentionsBlock)\(relationshipBlock)
 
             \(historyBlock)
 
-            Speak one short sentence to \(listener) — the actual words you'd say out loud. Mention something concrete from your day. Do NOT narrate ("I smile", "I notice", "\(listener) greets me"). Do NOT greet. Output only the spoken line.
+            Speak one short sentence to \(listener) — the actual words you'd say out loud, in your character's voice. Open mid-thought: react to what you saw, complain or tease, share a specific opinion, mention a concrete detail of your day. Don't be polite for politeness' sake. Don't greet. Don't narrate ("I smile", "I notice"). Output only the spoken line.
             """
 
-        return await respond(npcName: speaker, role: speakerRole, label: "\(speaker) dialogue", prompt: prompt)
+        return await respond(npcName: speaker, role: speakerRole, personality: speakerPersonality, label: "\(speaker) dialogue", prompt: prompt)
     }
 
     static func generateResponse(
         responder: String,
         responderRole: String,
+        responderPersonality: String,
+        responderMood: String,
         to speaker: String,
         speakerRole: String,
         othersPresent: [String] = [],
@@ -446,20 +457,20 @@ enum NPCBrain {
             : " \(othersPresent.joined(separator: " and ")) \(othersPresent.count == 1 ? "is" : "are") also here."
 
         let prompt = """
-            It's \(timeOfDay). You're at the \(location), \(responderActivity.lowercased()) \(responderActivityDuration).
+            It's \(timeOfDay). You're at the \(location), \(responderActivity.lowercased()) \(responderActivityDuration). You feel \(responderMood).
             \(speaker) (\(speakerRole)) just said: "\(previousLine)"\(othersBlock)\(observationsBlock)\(intentionsBlock)\(relationshipBlock)\(historyBlock)
 
-            Reply to \(speaker) with one short sentence — the actual words you'd say out loud. React to what they said. Do NOT narrate ("I smile", "I notice", "\(speaker) greets me"). Do NOT write \(speaker)'s next line.\(closingNote) Output only the spoken line.
+            Reply to \(speaker) with one short sentence — the actual words you'd say out loud, in your character's voice. React to what they said with an opinion, a complaint, a tease, or a specific fact from your day. Don't narrate, don't be generically polite, don't write \(speaker)'s next line.\(closingNote) Output only the spoken line.
             """
 
-        return await respond(npcName: responder, role: responderRole, label: "\(responder) response", prompt: prompt)
+        return await respond(npcName: responder, role: responderRole, personality: responderPersonality, label: "\(responder) response", prompt: prompt)
     }
 
-    private static func respond(npcName: String, role: String, label: String, prompt: String) async -> String? {
+    private static func respond(npcName: String, role: String, personality: String, label: String, prompt: String) async -> String? {
         print("[LLM] Generating \(label)...")
         let start = Date()
         do {
-            let session = await registry.session(for: npcName, role: role)
+            let session = await registry.session(for: npcName, role: role, personality: personality)
             let content = try await session.respondString(prompt: prompt, options: dialogueOptions)
             let total = Date().timeIntervalSince(start)
             let cleaned = cleanLine(content, npcName: npcName)

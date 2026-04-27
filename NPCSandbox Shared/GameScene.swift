@@ -59,7 +59,7 @@ class GameScene: SKScene {
         setupSkyOverlay()
         setupHUD()
         for npc in npcs {
-            NPCBrain.warmUp(npcName: npc.name, role: npc.role)
+            NPCBrain.warmUp(npcName: npc.name, role: npc.role, personality: npc.personality)
         }
     }
 
@@ -212,6 +212,7 @@ class GameScene: SKScene {
         let baker = NPC(
             name: "Elara",
             role: "the village baker",
+            personality: "anxious perfectionist; second-guesses every loaf; mutters when distracted; warm but quietly worried about the oven; proud of her sourdough; suspicious of any morning that goes too smoothly",
             tileID: CharTile.villager1,
             startPos: MapLocation.bakeryDoor,
             schedule: [
@@ -234,6 +235,7 @@ class GameScene: SKScene {
         let keeper = NPC(
             name: "Mora",
             role: "the tavern keeper",
+            personality: "dry and sharp-tongued; runs the tavern with no nonsense; collects every rumor in town and pretends she doesn't; teases Elara about her bread, gripes about Gareth's slow grain delivery; has opinions on everyone",
             tileID: CharTile.villager3,
             startPos: MapLocation.tavernDoor,
             schedule: [
@@ -257,6 +259,7 @@ class GameScene: SKScene {
         let farmer = NPC(
             name: "Gareth",
             role: "the village farmer",
+            personality: "weather-beaten and laconic; thinks more than he speaks; complains about crows; takes pride in clean rows; suspicious of new ideas and townsfolk who haven't seen real weather; every sentence is shorter than necessary",
             tileID: CharTile.villager2,
             startPos: MapLocation.farmhouseDoor,
             schedule: [
@@ -481,7 +484,9 @@ class GameScene: SKScene {
         }
 
         for npc in npcs {
+            npc.tickNeeds(currentMinute: gameClock.totalMinutes)
             npc.checkSchedule(clock: gameClock, navGraph: navGraph)
+            npc.considerWander(clock: gameClock, navGraph: navGraph)
         }
 
         // Gate only the LLM-driven branches: don't kick off a new chat or daily
@@ -567,6 +572,8 @@ class GameScene: SKScene {
         struct ParticipantContext: Sendable {
             let name: String
             let role: String
+            let personality: String
+            let mood: String
             let activity: String
             let activityDuration: String
             let observations: [String]
@@ -576,6 +583,8 @@ class GameScene: SKScene {
             ParticipantContext(
                 name: npc.name,
                 role: npc.role,
+                personality: npc.personality,
+                mood: npc.currentMood,
                 activity: npc.currentActivity,
                 activityDuration: npc.activityDurationDescription(currentMinutes: now),
                 observations: npc.memory.recentObservations(),
@@ -619,6 +628,8 @@ class GameScene: SKScene {
                 let openingLine = await NPCBrain.generateDialogue(
                     speaker: opener.name,
                     speakerRole: opener.role,
+                    speakerPersonality: opener.personality,
+                    speakerMood: opener.mood,
                     listener: primaryListener.name,
                     listenerRole: primaryListener.role,
                     othersPresent: Array(othersForOpener),
@@ -660,6 +671,8 @@ class GameScene: SKScene {
                     let line = await NPCBrain.generateResponse(
                         responder: current.name,
                         responderRole: current.role,
+                        responderPersonality: current.personality,
+                        responderMood: current.mood,
                         to: prev.name,
                         speakerRole: prev.role,
                         othersPresent: others,
@@ -711,9 +724,13 @@ class GameScene: SKScene {
         let now = gameClock.totalMinutes
         let speakerName = speaker.name
         let speakerRole = speaker.role
+        let speakerPersonality = speaker.personality
+        let speakerMood = speaker.currentMood
         let speakerColor = speaker.dialogueColor
         let listenerName = listener.name
         let listenerRole = listener.role
+        let listenerPersonality = listener.personality
+        let listenerMood = listener.currentMood
         let listenerColor = listener.dialogueColor
         let location = MapLocation.nearestName(to: speaker.gridPos)
         let speakerActivity = speaker.currentActivity
@@ -754,6 +771,8 @@ class GameScene: SKScene {
                 let openingLine = await NPCBrain.generateDialogue(
                     speaker: speakerName,
                     speakerRole: speakerRole,
+                    speakerPersonality: speakerPersonality,
+                    speakerMood: speakerMood,
                     listener: listenerName,
                     listenerRole: listenerRole,
                     location: location,
@@ -765,7 +784,7 @@ class GameScene: SKScene {
                     relationshipNote: speakerRelationshipNote,
                     priorChatsToday: priorChats,
                     chatHistory: speakerHistory
-                ) ?? "Good day!"
+                ) ?? "..."
 
                 var transcript: [(speaker: String, line: String)] = [(speakerName, openingLine)]
 
@@ -792,6 +811,8 @@ class GameScene: SKScene {
                     let responderObservations = responderIsListener ? listenerObservations : speakerObservations
                     let responderIntentions = responderIsListener ? listenerIntentions : speakerIntentions
                     let responderRelationshipNote = responderIsListener ? listenerRelationshipNote : speakerRelationshipNote
+                    let responderPersonality = responderIsListener ? listenerPersonality : speakerPersonality
+                    let responderMood = responderIsListener ? listenerMood : speakerMood
                     let nextResponderName = responderIsListener ? speakerName : listenerName
                     let nextResponderColor = responderIsListener ? speakerColor : listenerColor
                     let isFinal = (turnIndex == turnCount - 1)
@@ -802,6 +823,8 @@ class GameScene: SKScene {
                     let line = await NPCBrain.generateResponse(
                         responder: responderName,
                         responderRole: responderRole,
+                        responderPersonality: responderPersonality,
+                        responderMood: responderMood,
                         to: otherName,
                         speakerRole: otherRole,
                         location: location,
@@ -844,11 +867,11 @@ class GameScene: SKScene {
                 let transcriptStrings = finalTranscript.map { "\($0.speaker): \"\($0.line)\"" }
                 Task.detached { [weak speaker, weak listener] in
                     async let speakerRating = NPCBrain.rateExchange(
-                        npcName: speakerName, role: speakerRole,
+                        npcName: speakerName, role: speakerRole, personality: speakerPersonality,
                         partner: listenerName, transcript: transcriptStrings
                     )
                     async let listenerRating = NPCBrain.rateExchange(
-                        npcName: listenerName, role: listenerRole,
+                        npcName: listenerName, role: listenerRole, personality: listenerPersonality,
                         partner: speakerName, transcript: transcriptStrings
                     )
                     let (sRating, lRating) = await (speakerRating, listenerRating)
@@ -1041,10 +1064,12 @@ class GameScene: SKScene {
                 let schedule = npc.scheduleDescription
                 let npcName = npc.name
                 let npcRole = npc.role
+                let npcPersonality = npc.personality
                 Task.detached { [weak npc] in
                     let reflection = await NPCBrain.generateReflection(
                         npcName: npcName,
                         role: npcRole,
+                        personality: npcPersonality,
                         schedule: schedule,
                         memories: memories
                     )
@@ -1052,6 +1077,7 @@ class GameScene: SKScene {
                     let intentions = await NPCBrain.generateIntentions(
                         npcName: npcName,
                         role: npcRole,
+                        personality: npcPersonality,
                         reflectionText: reflection,
                         schedule: schedule
                     )
@@ -1162,6 +1188,8 @@ class GameScene: SKScene {
 
         let npcName = npc.name
         let npcRole = npc.role
+        let npcPersonality = npc.personality
+        let npcMood = npc.currentMood
         let location = MapLocation.nearestName(to: npc.gridPos)
         let timeOfDay = gameClock.timeString
         let activity = playerChatNPCActivity
@@ -1174,6 +1202,8 @@ class GameScene: SKScene {
             let reply = await NPCBrain.respondToPlayer(
                 npcName: npcName,
                 role: npcRole,
+                personality: npcPersonality,
+                mood: npcMood,
                 location: location,
                 timeOfDay: timeOfDay,
                 npcActivity: activity,

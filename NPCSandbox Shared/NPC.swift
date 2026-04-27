@@ -47,6 +47,10 @@ struct ScheduleEntry {
 class NPC {
     let name: String
     let role: String
+    /// Distinctive voice notes injected into the model's Instructions. Concrete
+    /// quirks/opinions/pet peeves so the model has texture to draw from instead
+    /// of falling back to polite small talk.
+    let personality: String
     let sprite: SKSpriteNode
     let label: SKLabelNode
     let memory: MemoryStream
@@ -129,10 +133,68 @@ class NPC {
     /// `resetForNewDay`.
     private var scheduleJitter: [Int: Int] = [:]
 
-    init(name: String, role: String, tileID: Int, startPos: GridPosition, schedule: [ScheduleEntry],
-         sociability: Double, dialogueColor: SKColor, tileSize: CGFloat, mapRows: Int) {
+    // MARK: - Needs (energy + social)
+
+    /// Drains during the day; restores when the NPC is at home / sleeping.
+    /// Low energy -> "tired" mood, dialogue colored accordingly.
+    private(set) var energy: Double = 1.0
+    /// Drains in isolation; +0.3 boost on each chat. Low social -> "withdrawn".
+    private(set) var social: Double = 0.7
+    private var lastNeedsTickMinute: Int = -1
+
+    /// Tick needs forward. Called every frame from GameScene.update().
+    func tickNeeds(currentMinute: Int) {
+        if lastNeedsTickMinute < 0 || currentMinute < lastNeedsTickMinute {
+            lastNeedsTickMinute = currentMinute
+            return
+        }
+        let delta = currentMinute - lastNeedsTickMinute
+        guard delta > 0 else { return }
+        lastNeedsTickMinute = currentMinute
+
+        let isAtHome = currentActivity.lowercased().contains("home")
+            || currentActivity.lowercased().contains("waking")
+            || currentActivity.lowercased().contains("sleep")
+        let energyDelta = (isAtHome ? 0.003 : -0.001) * Double(delta)
+        energy = max(0, min(1, energy + energyDelta))
+        social = max(0, min(1, social - 0.0006 * Double(delta)))
+    }
+
+    /// Boost social when a chat happens.
+    func registerChatNeedBoost() {
+        social = min(1, social + 0.3)
+    }
+
+    /// Derived mood string. Surfaced into dialogue prompts so voice
+    /// reflects current state — "tired" when low energy, "withdrawn"
+    /// when low social, "cheerful" when both are high, etc.
+    var currentMood: String {
+        if energy < 0.25 && social < 0.3 { return "spent and a little lonely" }
+        if energy < 0.25 { return "tired" }
+        if social < 0.25 { return "a bit withdrawn" }
+        if energy > 0.8 && social > 0.7 { return "lively" }
+
+        let sentimentValues = relationships.values.map { $0.sentiment }
+        let avgSentiment = sentimentValues.isEmpty ? 0 :
+            Double(sentimentValues.reduce(0, +)) / Double(sentimentValues.count)
+        if avgSentiment > 2 { return "content" }
+        if avgSentiment < -2 { return "uneasy" }
+        return "settled"
+    }
+
+    // MARK: - Wandering
+
+    private var lastWanderMinute: Int = -100
+    private let wanderRadius = 2
+    private let wanderIntervalMinutes = 8
+    private let slackBeforeWanderMinutes = 5
+
+    init(name: String, role: String, personality: String, tileID: Int, startPos: GridPosition,
+         schedule: [ScheduleEntry], sociability: Double, dialogueColor: SKColor,
+         tileSize: CGFloat, mapRows: Int) {
         self.name = name
         self.role = role
+        self.personality = personality
         self.gridPos = startPos
         self.schedule = schedule.sorted { $0.totalMinutes < $1.totalMinutes }
         self.sociability = sociability
@@ -273,6 +335,7 @@ class NPC {
 
         currentActivity = "Chatting"
         updateLabel()
+        registerChatNeedBoost()
     }
 
     func endChat(clock: GameClock) {
@@ -340,6 +403,48 @@ class NPC {
                 return
             }
         }
+    }
+
+    /// When idle near a schedule destination with significant slack until the
+    /// next entry, take a small unscheduled wander so NPCs don't stand frozen
+    /// waiting for the next schedule trigger.
+    func considerWander(clock: GameClock, navGraph: GKGridGraph<GKGridGraphNode>) {
+        guard !isInterrupted, !isWalking else { return }
+        let now = clock.totalMinutes
+        if now - lastWanderMinute < wanderIntervalMinutes { return }
+
+        // Find the active entry's anchor location.
+        var activeEntry: ScheduleEntry?
+        for entry in schedule.reversed() {
+            if now >= triggerMinute(for: entry) { activeEntry = entry; break }
+        }
+        guard let anchor = activeEntry?.location else { return }
+
+        let distFromAnchor = abs(gridPos.col - anchor.col) + abs(gridPos.row - anchor.row)
+        guard distFromAnchor <= wanderRadius else { return }
+
+        // Slack — must have time until the next entry actually fires.
+        let nextTrigger = schedule
+            .first { triggerMinute(for: $0) > now }
+            .map { triggerMinute(for: $0) } ?? Int.max
+        guard nextTrigger - now > slackBeforeWanderMinutes else { return }
+
+        // Pick a random walkable tile within wanderRadius of the ANCHOR
+        // (not current position) so wanders stay bounded around the spot.
+        var candidates: [GridPosition] = []
+        for dr in -wanderRadius...wanderRadius {
+            for dc in -wanderRadius...wanderRadius {
+                if dr == 0 && dc == 0 { continue }
+                let pos = GridPosition(col: anchor.col + dc, row: anchor.row + dr)
+                if pos == gridPos { continue }
+                if navGraph.node(atGridPosition: vector_int2(Int32(pos.col), Int32(pos.row))) != nil {
+                    candidates.append(pos)
+                }
+            }
+        }
+        guard let target = candidates.randomElement() else { return }
+        lastWanderMinute = now
+        walkTo(target, navGraph: navGraph)
     }
 
     private func updateLabel() {
