@@ -25,6 +25,18 @@ struct ChatRating {
     let summary: String
 }
 
+/// NPC reply to the player. Combines the spoken line with a flag indicating
+/// whether the NPC just revealed their fragment in this turn — set true
+/// only when the player's last message clearly satisfied an unlock condition.
+@Generable
+struct NPCReply: Sendable {
+    @Guide(description: "What the NPC says — one short sentence, the literal words spoken, in their character's voice. Under 20 words. No narration.")
+    let line: String
+
+    @Guide(description: "True ONLY if the visitor's last message clearly satisfied one of your unlock conditions and you just revealed your secret in the line above. Otherwise false. Default to false when in doubt.")
+    let fragmentRevealed: Bool
+}
+
 enum NPCBrain {
 
     private static let dialogueOptions = GenerationOptions(
@@ -94,7 +106,7 @@ enum NPCBrain {
         private static func makeSession(npcName: String, role: String, personality: String) -> LanguageModelSession {
             let identity = "Your name is \(npcName). You are \(role) in a small medieval town."
             let voice = "Personality: \(personality). Speak in YOUR voice — opinionated, specific, sometimes cranky, dry, gossipy, proud, complaining, or teasing — whatever fits your personality. Do NOT default to polite small talk."
-            let world = "The town has only three places: a bakery (Elara's), a tavern (Mora's), and farm fields with a farmhouse (Gareth's). There is no market, blacksmith, mill, smithy, harbor, church, or any other place. The only people are Elara, Mora, Gareth, and occasionally a wandering visitor. Never invent other places or people."
+            let world = "The town has these places only: a bakery (Elara's), a tavern (Mora's), farm fields with a farmhouse (Gareth's), an old keep at the east edge (sealed shut, no one goes inside), an old crone's cottage in the south wood (Hilda's), and a stranger's camp on the south edge. There is no market, blacksmith, mill, smithy, harbor, or church. The only people are Elara (the baker), Mora (the tavern keeper), Gareth (the farmer), Father Aldric (the drunk priest who once tended the chapel that crumbled), Old Hilda (the reclusive crone), the Stranger (a quiet traveler who arrived a few days ago), and a Visitor — the player. Never invent other places or people."
             let outputRule = "Your output is the LITERAL WORDS YOU SPEAK OUT LOUD — what someone standing nearby would hear. NOT description, NOT narration, NOT a stage direction."
             let narrationBan = "NEVER write 'I smile', 'I notice', 'I walk', 'X greets me', 'X smiles', 'X continues'. Those are narration — wrong. Speak the dialogue itself."
             let format = "One short in-character sentence — under 20 words. No quotes, no parentheticals, no name prefix like '\(npcName):'."
@@ -159,6 +171,12 @@ enum NPCBrain {
             await s.warmUp()
             print("[LLM] Session prewarmed for \(npcName)")
         }
+    }
+
+    /// Drop this NPC's session so its next call starts with a fresh
+    /// transcript. Used on loop reset — NPCs don't remember the prior loop.
+    static func invalidate(npcName: String) async {
+        await registry.invalidate(npcName)
     }
 
     private static func formatSeconds(_ seconds: Double) -> String {
@@ -313,9 +331,13 @@ enum NPCBrain {
         npcActivityDuration: String,
         npcObservations: [String],
         npcIntentions: [String],
+        fragment: Fragment?,
+        unlockConditions: [String],
+        dodgesTopics: [String],
+        fragmentAlreadyRevealed: Bool,
         playerMessage: String,
         chatHistory: [String]
-    ) async -> String? {
+    ) async -> NPCReply? {
         guard isAvailable else { return nil }
 
         let observationsBlock = npcObservations.isEmpty
@@ -334,14 +356,43 @@ enum NPCBrain {
             historyBlock = "\n\nEarlier in this exchange:\n\(joined)"
         }
 
+        let dodgesBlock = dodgesTopics.isEmpty
+            ? ""
+            : "\nYou tend to dodge these topics — deflect or change subject if the visitor pushes on them: \(dodgesTopics.joined(separator: "; "))."
+
+        let secretBlock: String
+        if let fragment, !fragmentAlreadyRevealed {
+            let conditions = unlockConditions.map { "- \($0)" }.joined(separator: "\n")
+            secretBlock = """
+
+                You hold a secret: \(fragment.promptDescription)
+                You will reveal it ONLY if the visitor's last message clearly satisfies one of these conditions:
+                \(conditions)
+                If satisfied, weave the secret naturally into your reply (don't recite like a script) and set fragmentRevealed = true.
+                Otherwise, respond in character without revealing it. Set fragmentRevealed = false.
+                """
+        } else {
+            secretBlock = "\n\nYou have nothing to reveal in this exchange. fragmentRevealed must be false."
+        }
+
         let prompt = """
             It's \(timeOfDay). You're at the \(location), \(npcActivity.lowercased()) \(npcActivityDuration). You feel \(mood).
-            A visitor — a stranger to the village — is here speaking with you. They just said: "\(playerMessage)"\(observationsBlock)\(intentionsBlock)\(historyBlock)
+            A visitor — a stranger to the village — is here speaking with you. They just said: "\(playerMessage)"\(observationsBlock)\(intentionsBlock)\(historyBlock)\(dodgesBlock)\(secretBlock)
 
-            Reply with one short sentence — the actual words you'd say out loud, in your character's voice. React to what they actually said. Don't narrate. Output only the spoken line.
+            Reply with one short sentence — the actual words you'd say out loud, in your character's voice. React to what they actually said. Don't narrate. Output only the spoken line and the fragmentRevealed flag.
             """
 
-        return await respond(npcName: npcName, role: role, personality: personality, label: "\(npcName) -> visitor", prompt: prompt)
+        do {
+            let session = await registry.session(for: npcName, role: role, personality: personality)
+            return try await session.respondGenerable(
+                prompt: prompt,
+                type: NPCReply.self,
+                options: dialogueOptions
+            )
+        } catch {
+            await handle(error: error, npcName: npcName, label: "\(npcName) -> visitor")
+            return nil
+        }
     }
 
     // MARK: - Dialogue

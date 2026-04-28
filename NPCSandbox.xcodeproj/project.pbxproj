@@ -25,10 +25,20 @@
 				GameClock.swift,
 				GameScene.sks,
 				GameScene.swift,
+				Journal.swift,
 				KenneyLicense.txt,
+				Lifesheet.swift,
 				MemoryStream.swift,
 				NPC.swift,
 				NPCBrain.swift,
+				NPCs/Aldric.swift,
+				NPCs/Elara.swift,
+				NPCs/Gareth.swift,
+				NPCs/Hilda.swift,
+				NPCs/Mora.swift,
+				NPCs/Roster.swift,
+				NPCs/Stranger.swift,
+				Player.swift,
 				tilemap_packed.png,
 				TileReference.swift,
 				TinyDungeon.atlas,
@@ -51,10 +61,20 @@
 				GameClock.swift,
 				GameScene.sks,
 				GameScene.swift,
+				Journal.swift,
 				KenneyLicense.txt,
+				Lifesheet.swift,
 				MemoryStream.swift,
 				NPC.swift,
 				NPCBrain.swift,
+				NPCs/Aldric.swift,
+				NPCs/Elara.swift,
+				NPCs/Gareth.swift,
+				NPCs/Hilda.swift,
+				NPCs/Mora.swift,
+				NPCs/Roster.swift,
+				NPCs/Stranger.swift,
+				Player.swift,
 				tilemap_packed.png,
 				TileReference.swift,
 				TinyDungeon.atlas,
@@ -255,6 +275,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = ZB58LR6S8H;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "NPCSandbox iOS/Info.plist";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -288,6 +309,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = ZB58LR6S8H;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "NPCSandbox iOS/Info.plist";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

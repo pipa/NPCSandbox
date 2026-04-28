@@ -7,9 +7,15 @@ import UIKit
 @MainActor
 class GameScene: SKScene {
 
-    private let mapColumns = 20
-    private let mapRows = 15
+    private let mapColumns = 30
+    private let mapRows = 20
     private let tileSize: CGFloat = 16
+
+    // Set to "TinyTown" or "TinyDungeon" to render the atlas as a numbered
+    // grid instead of running the game. Used to build tile references.
+    private static let debugTileSheet: String? = nil
+    private static let debugTileCount = 132
+    private static let debugTileColumns = 12
 
     private var navGraph: GKGridGraph<GKGridGraphNode>!
     private var gameClock = GameClock()
@@ -23,7 +29,28 @@ class GameScene: SKScene {
     private var chatLines: [SKLabelNode] = []
     private var currentThinkingLabel: SKLabelNode?
     private var waitingForDialogue = false
+    /// Number of newest lines to skip from the bottom — 0 means newest at
+    /// bottom (default). Increases when the user scrolls back through history.
+    private var chatScrollOffset: Int = 0
+    /// While true, new messages keep the view pinned to the bottom. Flips to
+    /// false the moment the user scrolls up; flips back when they return.
+    private var chatStickyToBottom: Bool = true
+    /// Pixel deltas accumulate here until they exceed a per-line threshold.
+    private var chatScrollAccumulator: CGFloat = 0
     private var skyOverlay: SKSpriteNode!
+
+    private var cameraNode: SKCameraNode!
+    private var player: Player?
+    /// What the player has learned. Persists across loops once we add the
+    /// looper — knowledge-only persistence is the puzzle's spine.
+    private let journal = Journal()
+    private var journalOverlay: SKNode?
+    private var journalIcon: SKNode?
+    private var fragmentCounter: SKLabelNode?
+    private var introCardNode: SKNode?
+    private var resetOverlay: SKNode?
+    private var catastropheActive = false
+    private var loopAttempt = 1
 
     // Player chat state (iOS only).
     private var playerChatActive = false
@@ -35,6 +62,8 @@ class GameScene: SKScene {
     #if os(iOS)
     private var playerInputField: UITextField?
     private var playerInputDelegate: PlayerInputDelegate?
+    private var chatPanGesture: UIPanGestureRecognizer?
+    private var chatPanTarget: ChatPanTarget?
     #endif
 
     private let playerColor = SKColor(red: 1.0, green: 1.0, blue: 0.85, alpha: 1)
@@ -43,6 +72,13 @@ class GameScene: SKScene {
     private let chatPadding: CGFloat = 6
     private let chatFontSize: CGFloat = 7
     private let chatLineSpacing: CGFloat = 2
+    /// Chat panel height as a fraction of the scene height. Fixed so the
+    /// panel never overruns the play area; older messages scroll out.
+    private let chatPanelHeightFraction: CGFloat = 0.45
+    /// Height of the input bar that sits at the bottom of the chat panel.
+    private let chatInputBarHeight: CGFloat = 16
+    /// Vertical gap between the input bar and the chat lines above.
+    private let chatDividerGap: CGFloat = 3
 
     class func newGameScene() -> GameScene {
         let scene = GameScene(size: CGSize(width: 320, height: 240))
@@ -52,27 +88,113 @@ class GameScene: SKScene {
 
     override func didMove(to view: SKView) {
         backgroundColor = .black
-        let overlay = buildOverlayData()
-        renderTileMap(overlay: overlay)
-        buildNavGraph(from: overlay)
+        if let atlasName = Self.debugTileSheet {
+            renderAllTilesNumbered(
+                atlasName: atlasName,
+                tileCount: Self.debugTileCount,
+                columns: Self.debugTileColumns
+            )
+            return
+        }
+        let data = buildOverlayData()
+        renderTileMap(underlay: data.underlay, overlay: data.overlay)
+        buildNavGraph(from: data.overlay)
         spawnNPCs()
+        spawnPlayer()
+        setupCamera()
         setupSkyOverlay()
         setupHUD()
+        setupJournalIcon()
         for npc in npcs {
             NPCBrain.warmUp(npcName: npc.name, role: npc.role, personality: npc.personality)
+        }
+        showIntroCard()
+    }
+
+    private func setupCamera() {
+        let cam = SKCameraNode()
+        addChild(cam)
+        camera = cam
+        cameraNode = cam
+        if let player = player {
+            cam.position = clampedCameraPosition(targeting: player.sprite.position)
+        } else {
+            cam.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        }
+    }
+
+    /// Keep the camera within the map bounds so the view never reveals the
+    /// black void outside the world.
+    private func clampedCameraPosition(targeting target: CGPoint) -> CGPoint {
+        let halfW = size.width / 2
+        let halfH = size.height / 2
+        let mapW = CGFloat(mapColumns) * tileSize
+        let mapH = CGFloat(mapRows) * tileSize
+        let clampedX = max(halfW, min(mapW - halfW, target.x))
+        let clampedY = max(halfH, min(mapH - halfH, target.y))
+        return CGPoint(x: clampedX, y: clampedY)
+    }
+
+    private func spawnPlayer() {
+        let p = Player(
+            name: "Visitor",
+            tileID: CharTile.manGreen,
+            startPos: MapLocation.townSquare,
+            dialogueColor: playerColor,
+            tileSize: tileSize,
+            mapRows: mapRows
+        )
+        addChild(p.sprite)
+        player = p
+    }
+
+    // MARK: - Debug: numbered atlas grid
+
+    private func renderAllTilesNumbered(atlasName: String, tileCount: Int, columns: Int) {
+        let atlas = SKTextureAtlas(named: atlasName)
+        let originX = tileSize / 2
+        let originY = size.height - tileSize / 2
+
+        for id in 0..<tileCount {
+            let col = id % columns
+            let row = id / columns
+            let pos = CGPoint(
+                x: originX + CGFloat(col) * tileSize,
+                y: originY - CGFloat(row) * tileSize
+            )
+            let texName = String(format: "tile_%04d", id)
+            let tex = atlas.textureNamed(texName)
+            tex.filteringMode = .nearest
+            let sprite = SKSpriteNode(texture: tex)
+            sprite.position = pos
+            addChild(sprite)
+
+            let label = SKLabelNode(text: "\(id)")
+            label.fontName = "Menlo"
+            label.fontSize = 5
+            label.fontColor = .white
+            label.verticalAlignmentMode = .bottom
+            label.position = CGPoint(x: pos.x, y: pos.y - tileSize / 2 + 1)
+            label.zPosition = 10
+            addChild(label)
         }
     }
 
     // MARK: - Tile Map
 
-    private func renderTileMap(overlay: [[Int]]) {
-        let atlas = SKTextureAtlas(named: "TinyTown")
+    private func renderTileMap(underlay: [[Int]], overlay: [[Int]]) {
+        let townAtlas = SKTextureAtlas(named: "TinyTown")
+        let dungeonAtlas = SKTextureAtlas(named: "TinyDungeon")
         var textureCache: [Int: SKTexture] = [:]
 
         func texture(for id: Int) -> SKTexture {
             if let cached = textureCache[id] { return cached }
-            let name = String(format: "tile_%04d", id)
-            let tex = atlas.textureNamed(name)
+            let tex: SKTexture
+            if id >= 1000 {
+                tex = dungeonAtlas.textureNamed(String(format: "tile_%04d", id - 1000))
+            } else {
+                tex = townAtlas.textureNamed(String(format: "tile_%04d", id))
+            }
             tex.filteringMode = .nearest
             textureCache[id] = tex
             return tex
@@ -82,14 +204,24 @@ class GameScene: SKScene {
 
         for row in 0..<mapRows {
             for col in 0..<mapColumns {
+                let pos = tilePosition(col: col, row: row)
+
                 let grassSprite = SKSpriteNode(texture: grassTexture)
-                grassSprite.position = tilePosition(col: col, row: row)
+                grassSprite.position = pos
                 addChild(grassSprite)
 
-                let overlayID = overlay[row][col]
-                if overlayID >= 0 {
-                    let sprite = SKSpriteNode(texture: texture(for: overlayID))
-                    sprite.position = tilePosition(col: col, row: row)
+                let underID = underlay[row][col]
+                if underID >= 0 {
+                    let sprite = SKSpriteNode(texture: texture(for: underID))
+                    sprite.position = pos
+                    sprite.zPosition = 0.5
+                    addChild(sprite)
+                }
+
+                let overID = overlay[row][col]
+                if overID >= 0 {
+                    let sprite = SKSpriteNode(texture: texture(for: overID))
+                    sprite.position = pos
                     sprite.zPosition = 1
                     addChild(sprite)
                 }
@@ -97,66 +229,85 @@ class GameScene: SKScene {
         }
     }
 
-    private func buildOverlayData() -> [[Int]] {
+    private func buildOverlayData() -> (underlay: [[Int]], overlay: [[Int]]) {
         let P = TownTile.path
         let T = TownTile.treePine
         let G = TownTile.treeGreen
         let W = TownTile.wheat
-        let _ = -1 // grass (unused var to clarify intent)
 
-        // Start with all grass
-        var grid = Array(repeating: Array(repeating: -1, count: mapColumns), count: mapRows)
+        var overlay = Array(repeating: Array(repeating: -1, count: mapColumns), count: mapRows)
+        var underlay = Array(repeating: Array(repeating: -1, count: mapColumns), count: mapRows)
 
-        // Trees around edges
+        // Forest border (top + bottom rows, plus a few side anchors)
         let treePositions: [(Int, Int, Int)] = [
-            (0,0,T), (0,1,G), (0,2,T), (0,17,T), (0,18,G), (0,19,T),
-            (1,0,G), (1,19,G),
-            (13,0,G), (13,19,G),
-            (14,0,T), (14,1,G), (14,2,T), (14,7,T), (14,11,T), (14,17,T), (14,18,G), (14,19,T),
+            (0,0,T), (0,1,G), (0,2,T), (0,3,G), (0,16,T), (0,17,G), (0,18,T), (0,19,G),
+            (1,0,G), (1,19,T),
+            (13,0,T), (13,19,G),
+            (14,0,G), (14,1,T), (14,2,G), (14,3,T),
+            (14,16,G), (14,17,T), (14,18,G), (14,19,T),
         ]
         for (r, c, tile) in treePositions {
-            grid[r][c] = tile
+            overlay[r][c] = tile
         }
 
-        // Main street (vertical, column 9)
+        // Main street (vertical, col 9, rows 1-12)
         for row in 1...12 {
-            grid[row][9] = P
+            overlay[row][9] = P
         }
 
-        // Cross street (horizontal, row 7)
-        for col in 2...17 {
-            grid[7][col] = P
+        // Cross street (horizontal, row 7, cols 2-18 — extends to the keep)
+        for col in 2...18 {
+            overlay[7][col] = P
         }
 
-        // Bakery — blue house, upper left
-        placeBuilding(TownTile.blueHouse, in: &grid, atRow: 2, col: 3)
-
-        // Path branch from bakery to main street (row 4, cols 7-8)
-        grid[4][7] = P
-        grid[4][8] = P
-
-        // Tavern — red house, upper right
-        placeBuilding(TownTile.redHouse, in: &grid, atRow: 2, col: 12)
-
-        // Path branch from tavern to main street (row 4, cols 10-11)
-        grid[4][10] = P
-        grid[4][11] = P
-
-        // Farmhouse — blue house, lower left
-        placeBuilding(TownTile.blueHouse, in: &grid, atRow: 9, col: 3)
-
-        // Path branch from farmhouse to main street (row 11, cols 7-8)
-        grid[11][7] = P
-        grid[11][8] = P
-
-        // Farm fields (lower right)
-        for row in 9...12 {
-            for col in 13...15 {
-                grid[row][col] = W
+        // Town plaza — 3x3 dirt around the well at the crossroads
+        for row in 6...8 {
+            for col in 8...10 {
+                overlay[row][col] = P
             }
         }
 
-        return grid
+        // Bakery — blue house, NW
+        placeBuilding(TownTile.blueHouse, in: &overlay, atRow: 2, col: 3)
+        overlay[4][7] = P
+        overlay[4][8] = P
+
+        // Tavern — red house, NE
+        placeBuilding(TownTile.redHouse, in: &overlay, atRow: 2, col: 12)
+        overlay[4][10] = P
+        overlay[4][11] = P
+
+        // Farmhouse — blue house, SW
+        placeBuilding(TownTile.blueHouse, in: &overlay, atRow: 9, col: 3)
+        overlay[11][7] = P
+        overlay[11][8] = P
+
+        // The Old Keep — 6 wide × 5 tall, east edge (rows 8-12, cols 13-18)
+        placeBuilding(TownTile.castle, in: &overlay, atRow: 8, col: 13)
+        // Dirt floor under the keep's bottom row so the gate's transparent
+        // tiles (123/124) reveal the floor instead of grass.
+        for col in 13...18 {
+            underlay[12][col] = TownTile.pathBotMid
+        }
+
+        // Wheat field — south, in front of the farmhouse
+        for row in 12...13 {
+            for col in 4...10 {
+                overlay[row][col] = W
+            }
+        }
+
+        // Town square decorations — two-tile well (top + bottom) centered
+        // in the plaza, signpost at the NW corner.
+        overlay[6][9] = TownTile.wellTop
+        overlay[7][9] = TownTile.well
+        overlay[6][8] = TownTile.sign
+
+        // Beehive by the farmhouse, archery target out in the south field
+        overlay[12][2] = TownTile.beehive
+        overlay[13][12] = TownTile.target
+
+        return (underlay: underlay, overlay: overlay)
     }
 
     private func placeBuilding(_ building: [[Int]], in grid: inout [[Int]], atRow row: Int, col: Int) {
@@ -209,77 +360,9 @@ class GameScene: SKScene {
     // MARK: - NPCs
 
     private func spawnNPCs() {
-        let baker = NPC(
-            name: "Elara",
-            role: "the village baker",
-            personality: "anxious perfectionist; second-guesses every loaf; mutters when distracted; warm but quietly worried about the oven; proud of her sourdough; suspicious of any morning that goes too smoothly",
-            tileID: CharTile.villager1,
-            startPos: MapLocation.bakeryDoor,
-            schedule: [
-                ScheduleEntry(hour: 6, minute: 0, location: MapLocation.bakeryDoor, activity: "Baking"),
-                ScheduleEntry(hour: 6, minute: 30, location: MapLocation.townSquare, activity: "Morning stroll"),
-                ScheduleEntry(hour: 8, minute: 0, location: MapLocation.bakeryDoor, activity: "Baking"),
-                ScheduleEntry(hour: 10, minute: 0, location: MapLocation.townSquare, activity: "Buying supplies"),
-                ScheduleEntry(hour: 11, minute: 0, location: MapLocation.bakeryDoor, activity: "Baking"),
-                ScheduleEntry(hour: 13, minute: 0, location: MapLocation.tavernDoor, activity: "Delivering bread"),
-                ScheduleEntry(hour: 14, minute: 0, location: MapLocation.bakeryDoor, activity: "Baking"),
-                ScheduleEntry(hour: 17, minute: 0, location: MapLocation.townSquare, activity: "Evening walk"),
-                ScheduleEntry(hour: 19, minute: 0, location: MapLocation.bakeryDoor, activity: "Home"),
-            ],
-            sociability: 0.7,
-            dialogueColor: SKColor(red: 0.6, green: 0.9, blue: 1.0, alpha: 1),
-            tileSize: tileSize,
-            mapRows: mapRows
-        )
-
-        let keeper = NPC(
-            name: "Mora",
-            role: "the tavern keeper",
-            personality: "dry and sharp-tongued; runs the tavern with no nonsense; collects every rumor in town and pretends she doesn't; teases Elara about her bread, gripes about Gareth's slow grain delivery; has opinions on everyone",
-            tileID: CharTile.villager3,
-            startPos: MapLocation.tavernDoor,
-            schedule: [
-                ScheduleEntry(hour: 6, minute: 30, location: MapLocation.townSquare, activity: "Morning walk"),
-                ScheduleEntry(hour: 8, minute: 0, location: MapLocation.tavernDoor, activity: "Opening tavern"),
-                ScheduleEntry(hour: 10, minute: 0, location: MapLocation.bakeryDoor, activity: "Picking up bread"),
-                ScheduleEntry(hour: 11, minute: 0, location: MapLocation.tavernDoor, activity: "Preparing"),
-                ScheduleEntry(hour: 13, minute: 0, location: MapLocation.tavernDoor, activity: "Serving lunch"),
-                ScheduleEntry(hour: 15, minute: 0, location: MapLocation.townSquare, activity: "Afternoon break"),
-                ScheduleEntry(hour: 16, minute: 0, location: MapLocation.tavernDoor, activity: "Serving"),
-                ScheduleEntry(hour: 17, minute: 0, location: MapLocation.townSquare, activity: "Strolling"),
-                ScheduleEntry(hour: 18, minute: 30, location: MapLocation.tavernDoor, activity: "Evening service"),
-                ScheduleEntry(hour: 21, minute: 0, location: MapLocation.tavernDoor, activity: "Closing"),
-            ],
-            sociability: 0.8,
-            dialogueColor: SKColor(red: 1.0, green: 0.85, blue: 0.5, alpha: 1),
-            tileSize: tileSize,
-            mapRows: mapRows
-        )
-
-        let farmer = NPC(
-            name: "Gareth",
-            role: "the village farmer",
-            personality: "weather-beaten and laconic; thinks more than he speaks; complains about crows; takes pride in clean rows; suspicious of new ideas and townsfolk who haven't seen real weather; every sentence is shorter than necessary",
-            tileID: CharTile.villager2,
-            startPos: MapLocation.farmhouseDoor,
-            schedule: [
-                ScheduleEntry(hour: 6, minute: 0, location: MapLocation.farmhouseDoor, activity: "Waking up"),
-                ScheduleEntry(hour: 6, minute: 30, location: MapLocation.townSquare, activity: "Morning walk"),
-                ScheduleEntry(hour: 7, minute: 30, location: MapLocation.farmField, activity: "Working the fields"),
-                ScheduleEntry(hour: 9, minute: 0, location: MapLocation.bakeryDoor, activity: "Delivering grain"),
-                ScheduleEntry(hour: 10, minute: 30, location: MapLocation.farmField, activity: "Working the fields"),
-                ScheduleEntry(hour: 13, minute: 0, location: MapLocation.tavernDoor, activity: "Lunch"),
-                ScheduleEntry(hour: 14, minute: 30, location: MapLocation.farmField, activity: "Working the fields"),
-                ScheduleEntry(hour: 17, minute: 0, location: MapLocation.townSquare, activity: "Evening walk"),
-                ScheduleEntry(hour: 19, minute: 0, location: MapLocation.farmhouseDoor, activity: "Home"),
-            ],
-            sociability: 0.6,
-            dialogueColor: SKColor(red: 0.75, green: 1.0, blue: 0.7, alpha: 1),
-            tileSize: tileSize,
-            mapRows: mapRows
-        )
-
-        npcs = [baker, keeper, farmer]
+        npcs = Roster.all.map { sheet in
+            NPC(sheet: sheet, tileSize: tileSize, mapRows: mapRows)
+        }
         for npc in npcs {
             addChild(npc.sprite)
         }
@@ -289,11 +372,11 @@ class GameScene: SKScene {
 
     private func setupSkyOverlay() {
         skyOverlay = SKSpriteNode(color: .black, size: size)
-        skyOverlay.anchorPoint = .zero
+        skyOverlay.anchorPoint = CGPoint(x: 0.5, y: 0.5)
         skyOverlay.position = .zero
         skyOverlay.zPosition = 50
         skyOverlay.alpha = 0
-        addChild(skyOverlay)
+        cameraNode.addChild(skyOverlay)
         updateSkyOverlay()
     }
 
@@ -342,9 +425,590 @@ class GameScene: SKScene {
         timeLabel.fontName = "Menlo-Bold"
         timeLabel.horizontalAlignmentMode = .left
         timeLabel.verticalAlignmentMode = .top
-        timeLabel.position = CGPoint(x: 4, y: size.height - 4)
+        // Camera-relative coords: top-left of the visible view.
+        timeLabel.position = CGPoint(x: -size.width / 2 + 4, y: size.height / 2 - 4)
         timeLabel.zPosition = 100
-        addChild(timeLabel)
+        cameraNode.addChild(timeLabel)
+    }
+
+    // MARK: - Journal UI
+
+    private func setupJournalIcon() {
+        let icon = SKShapeNode(rectOf: CGSize(width: 14, height: 14), cornerRadius: 1)
+        icon.fillColor = SKColor(red: 0.55, green: 0.4, blue: 0.25, alpha: 1)
+        icon.strokeColor = SKColor(red: 0.08, green: 0.08, blue: 0.1, alpha: 1)
+        icon.lineWidth = 0.6
+        icon.name = "journalIcon"
+        // Top-right of the camera view.
+        icon.position = CGPoint(x: size.width / 2 - 11, y: size.height / 2 - 11)
+        icon.zPosition = 250
+
+        let label = SKLabelNode(text: "J")
+        label.fontName = "Menlo-Bold"
+        label.fontSize = 8
+        label.fontColor = SKColor(red: 1, green: 0.95, blue: 0.8, alpha: 1)
+        label.verticalAlignmentMode = .center
+        label.horizontalAlignmentMode = .center
+        label.name = "journalIconText"
+        icon.addChild(label)
+
+        // Counter sitting just left of the journal icon — shows N/4 known
+        // fragments. Goes gold when full.
+        let counter = SKLabelNode(text: "0/4")
+        counter.fontName = "Menlo-Bold"
+        counter.fontSize = 6
+        counter.fontColor = SKColor(white: 0.9, alpha: 1)
+        counter.verticalAlignmentMode = .center
+        counter.horizontalAlignmentMode = .right
+        counter.position = CGPoint(x: -10, y: 0)
+        counter.zPosition = 1
+        icon.addChild(counter)
+        fragmentCounter = counter
+
+        cameraNode.addChild(icon)
+        journalIcon = icon
+    }
+
+    private func updateFragmentCounter() {
+        guard let counter = fragmentCounter else { return }
+        let count = journal.entries.count
+        counter.text = "\(count)/4"
+        counter.fontColor = (count >= 4)
+            ? SKColor(red: 1, green: 0.85, blue: 0.4, alpha: 1)
+            : SKColor(white: 0.9, alpha: 1)
+    }
+
+    private func toggleJournal() {
+        if journalOverlay != nil {
+            closeJournal()
+        } else {
+            openJournal()
+        }
+    }
+
+    private func openJournal() {
+        guard journalOverlay == nil else { return }
+
+        let overlay = SKNode()
+        overlay.zPosition = 300
+        overlay.name = "journalOverlay"
+
+        // Translucent backdrop covering the visible view.
+        let backdrop = SKShapeNode(rectOf: size)
+        backdrop.fillColor = SKColor(white: 0, alpha: 0.65)
+        backdrop.strokeColor = .clear
+        backdrop.zPosition = 0
+        overlay.addChild(backdrop)
+
+        // Centered panel.
+        let panelW: CGFloat = size.width * 0.72
+        let panelH: CGFloat = size.height * 0.78
+        let panel = SKShapeNode(
+            rect: CGRect(x: -panelW / 2, y: -panelH / 2, width: panelW, height: panelH),
+            cornerRadius: 3
+        )
+        panel.fillColor = SKColor(red: 0.09, green: 0.07, blue: 0.16, alpha: 0.97)
+        panel.strokeColor = SKColor(red: 0.55, green: 0.4, blue: 0.25, alpha: 1)
+        panel.lineWidth = 1
+        panel.zPosition = 1
+        overlay.addChild(panel)
+
+        let header = SKLabelNode(text: "Journal — Day \(currentDay)")
+        header.fontName = "Menlo-Bold"
+        header.fontSize = 9
+        header.fontColor = SKColor(red: 1, green: 0.85, blue: 0.5, alpha: 1)
+        header.verticalAlignmentMode = .top
+        header.horizontalAlignmentMode = .center
+        header.position = CGPoint(x: 0, y: panelH / 2 - 8)
+        header.zPosition = 2
+        overlay.addChild(header)
+
+        if journal.entries.isEmpty {
+            let empty = SKLabelNode(text: "Nothing learned yet.")
+            empty.fontName = "Menlo"
+            empty.fontSize = 6
+            empty.fontColor = SKColor(white: 0.55, alpha: 1)
+            empty.verticalAlignmentMode = .center
+            empty.horizontalAlignmentMode = .center
+            empty.position = .zero
+            empty.zPosition = 2
+            overlay.addChild(empty)
+        } else {
+            var y = panelH / 2 - 24
+            for entry in journal.entries {
+                let line = SKLabelNode(text: entry.summary)
+                line.fontName = "Menlo"
+                line.fontSize = 6
+                line.fontColor = .white
+                line.numberOfLines = 0
+                line.preferredMaxLayoutWidth = panelW - 16
+                line.horizontalAlignmentMode = .left
+                line.verticalAlignmentMode = .top
+                line.position = CGPoint(x: -panelW / 2 + 8, y: y)
+                line.zPosition = 2
+                overlay.addChild(line)
+                y -= max(line.frame.height, 8) + 4
+            }
+        }
+
+        let footer = SKLabelNode(text: "Tap or press J to close")
+        footer.fontName = "Menlo"
+        footer.fontSize = 5
+        footer.fontColor = SKColor(white: 0.5, alpha: 1)
+        footer.verticalAlignmentMode = .bottom
+        footer.horizontalAlignmentMode = .center
+        footer.position = CGPoint(x: 0, y: -panelH / 2 + 5)
+        footer.zPosition = 2
+        overlay.addChild(footer)
+
+        cameraNode.addChild(overlay)
+        journalOverlay = overlay
+    }
+
+    private func closeJournal() {
+        journalOverlay?.removeFromParent()
+        journalOverlay = nil
+    }
+
+    // MARK: - Reset shrine
+
+    /// Tap the well's tile to bring up a confirmation panel; tapping inside
+    /// the panel rewinds to Day 1, tapping anywhere else cancels.
+    private func showResetConfirmation() {
+        guard resetOverlay == nil else { return }
+
+        let overlay = SKNode()
+        overlay.zPosition = 350
+        overlay.name = "resetOverlay"
+
+        let backdrop = SKShapeNode(rectOf: size)
+        backdrop.fillColor = SKColor(white: 0, alpha: 0.5)
+        backdrop.strokeColor = .clear
+        overlay.addChild(backdrop)
+
+        let panelW: CGFloat = size.width * 0.62
+        let panelH: CGFloat = 52
+        let panel = SKShapeNode(
+            rect: CGRect(x: -panelW / 2, y: -panelH / 2, width: panelW, height: panelH),
+            cornerRadius: 3
+        )
+        panel.fillColor = SKColor(red: 0.09, green: 0.07, blue: 0.16, alpha: 0.97)
+        panel.strokeColor = SKColor(red: 0.55, green: 0.4, blue: 0.25, alpha: 1)
+        panel.lineWidth = 1
+        panel.name = "resetPanel"
+        overlay.addChild(panel)
+
+        let title = SKLabelNode(text: "Rewind the day?")
+        title.fontName = "Menlo-Bold"
+        title.fontSize = 8
+        title.fontColor = SKColor(red: 1, green: 0.85, blue: 0.5, alpha: 1)
+        title.verticalAlignmentMode = .center
+        title.horizontalAlignmentMode = .center
+        title.position = CGPoint(x: 0, y: 9)
+        overlay.addChild(title)
+
+        let body = SKLabelNode(text: "Tap here to confirm — knowledge stays.")
+        body.fontName = "Menlo"
+        body.fontSize = 5
+        body.fontColor = SKColor(white: 0.7, alpha: 1)
+        body.verticalAlignmentMode = .center
+        body.horizontalAlignmentMode = .center
+        body.position = CGPoint(x: 0, y: -3)
+        overlay.addChild(body)
+
+        let footer = SKLabelNode(text: "Tap outside to cancel.")
+        footer.fontName = "Menlo"
+        footer.fontSize = 5
+        footer.fontColor = SKColor(white: 0.45, alpha: 1)
+        footer.verticalAlignmentMode = .center
+        footer.horizontalAlignmentMode = .center
+        footer.position = CGPoint(x: 0, y: -14)
+        overlay.addChild(footer)
+
+        cameraNode.addChild(overlay)
+        resetOverlay = overlay
+    }
+
+    private func dismissResetConfirmation() {
+        resetOverlay?.removeFromParent()
+        resetOverlay = nil
+    }
+
+    // MARK: - Intro card + speech bubbles
+
+    /// Day-1 cold-open: black card with arrival text. Tap or wait to
+    /// dismiss; after dismissal the Stranger speaks his cryptic line.
+    private func showIntroCard() {
+        let card = SKNode()
+        card.zPosition = 400
+        card.name = "introCard"
+
+        let bg = SKShapeNode(rectOf: size)
+        bg.fillColor = .black
+        bg.strokeColor = .clear
+        bg.zPosition = 0
+        card.addChild(bg)
+
+        let title = SKLabelNode(text: "Day 1")
+        title.fontName = "Menlo-Bold"
+        title.fontSize = 14
+        title.fontColor = SKColor(red: 1, green: 0.9, blue: 0.6, alpha: 1)
+        title.verticalAlignmentMode = .center
+        title.horizontalAlignmentMode = .center
+        title.position = CGPoint(x: 0, y: 30)
+        title.zPosition = 1
+        card.addChild(title)
+
+        let body = SKLabelNode(text: "You arrived in the village last night.\nThe old man at the gate said something\nabout the stars.")
+        body.fontName = "Menlo"
+        body.fontSize = 7
+        body.fontColor = SKColor(white: 0.88, alpha: 1)
+        body.numberOfLines = 0
+        body.preferredMaxLayoutWidth = size.width * 0.7
+        body.verticalAlignmentMode = .center
+        body.horizontalAlignmentMode = .center
+        body.position = .zero
+        body.zPosition = 1
+        card.addChild(body)
+
+        let footer = SKLabelNode(text: "tap to continue")
+        footer.fontName = "Menlo"
+        footer.fontSize = 5
+        footer.fontColor = SKColor(white: 0.45, alpha: 1)
+        footer.verticalAlignmentMode = .bottom
+        footer.position = CGPoint(x: 0, y: -size.height / 2 + 8)
+        footer.zPosition = 1
+        card.addChild(footer)
+
+        cameraNode.addChild(card)
+        introCardNode = card
+
+        // Auto-dismiss after a few seconds if the player doesn't tap.
+        card.run(SKAction.sequence([
+            SKAction.wait(forDuration: 5.0),
+            SKAction.run { [weak self] in self?.dismissIntroCard() },
+        ]))
+    }
+
+    private func dismissIntroCard() {
+        guard let card = introCardNode else { return }
+        introCardNode = nil
+        card.removeAllActions()
+        card.run(SKAction.sequence([
+            SKAction.fadeOut(withDuration: 0.6),
+            SKAction.removeFromParent(),
+            SKAction.run { [weak self] in self?.showStrangerWelcome() },
+        ]))
+    }
+
+    private func showStrangerWelcome() {
+        guard let stranger = npcs.first(where: { $0.name == "the Stranger" }) else { return }
+        showSpeechBubble(
+            over: stranger,
+            text: "Listen tonight when the sky goes red. Then come find me.",
+            duration: 9.0
+        )
+    }
+
+    /// Generic speech bubble that floats above an NPC for a fixed duration
+    /// then fades. Reusable for sunset omens, Stranger callouts, etc.
+    private func showSpeechBubble(over npc: NPC, text: String, duration: TimeInterval) {
+        let bubble = SKNode()
+        bubble.zPosition = 70
+
+        let textLabel = SKLabelNode(text: text)
+        textLabel.fontName = "Menlo"
+        textLabel.fontSize = 5
+        textLabel.fontColor = SKColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1)
+        textLabel.numberOfLines = 0
+        textLabel.preferredMaxLayoutWidth = 90
+        textLabel.verticalAlignmentMode = .center
+        textLabel.horizontalAlignmentMode = .center
+
+        let textW = max(textLabel.frame.width + 8, 30)
+        let textH = max(textLabel.frame.height + 6, 12)
+
+        let bg = SKShapeNode(
+            rect: CGRect(x: -textW / 2, y: -textH / 2, width: textW, height: textH),
+            cornerRadius: 2
+        )
+        bg.fillColor = SKColor(red: 1, green: 1, blue: 0.96, alpha: 0.95)
+        bg.strokeColor = SKColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1)
+        bg.lineWidth = 0.5
+        bg.zPosition = 0
+
+        let tail = SKShapeNode()
+        let tailPath = CGMutablePath()
+        tailPath.move(to: CGPoint(x: -2, y: -textH / 2))
+        tailPath.addLine(to: CGPoint(x: 2, y: -textH / 2))
+        tailPath.addLine(to: CGPoint(x: 0, y: -textH / 2 - 2.5))
+        tailPath.closeSubpath()
+        tail.path = tailPath
+        tail.fillColor = bg.fillColor
+        tail.strokeColor = bg.strokeColor
+        tail.lineWidth = 0.5
+        tail.zPosition = -1
+
+        bubble.addChild(bg)
+        bubble.addChild(tail)
+        bubble.addChild(textLabel)
+
+        // Anchor the bubble above the NPC's head; reposition each frame so
+        // it tracks the NPC if they move during the bubble's lifetime.
+        let follow = SKAction.customAction(withDuration: duration) { [weak npc] node, _ in
+            guard let npc else { return }
+            node.position = CGPoint(
+                x: npc.sprite.position.x,
+                y: npc.sprite.position.y + 16
+            )
+        }
+        bubble.run(follow)
+        addChild(bubble)
+
+        bubble.run(SKAction.sequence([
+            SKAction.wait(forDuration: duration),
+            SKAction.fadeOut(withDuration: 0.5),
+            SKAction.removeFromParent(),
+        ]))
+    }
+
+    // MARK: - Catastrophe + loop reset
+
+    private func triggerCatastrophe() {
+        catastropheActive = true
+        print("[Catastrophe] Sunset reached — the seal breaks.")
+
+        // Sky reddens.
+        skyOverlay.run(SKAction.group([
+            SKAction.colorize(
+                with: SKColor(red: 0.45, green: 0.05, blue: 0.05, alpha: 1),
+                colorBlendFactor: 1.0,
+                duration: 1.5
+            ),
+            SKAction.fadeAlpha(to: 0.6, duration: 1.5),
+        ]))
+
+        // Sequence: monsters emerge from the keep arch, then screen fades
+        // to black, then reset.
+        let spawnMonsters = SKAction.run { [weak self] in
+            self?.spawnCatastropheMonsters()
+        }
+        let blackOut = SKAction.run { [weak self] in
+            guard let self else { return }
+            self.skyOverlay.run(SKAction.group([
+                SKAction.colorize(with: .black, colorBlendFactor: 1.0, duration: 1.2),
+                SKAction.fadeAlpha(to: 1.0, duration: 1.2),
+            ]))
+        }
+        let reset = SKAction.run { [weak self] in
+            self?.performLoopReset()
+        }
+
+        run(SKAction.sequence([
+            SKAction.wait(forDuration: 1.0),
+            spawnMonsters,
+            SKAction.wait(forDuration: 4.0),
+            blackOut,
+            SKAction.wait(forDuration: 1.8),
+            reset,
+        ]))
+    }
+
+    private func spawnCatastropheMonsters() {
+        let monsterTiles = [
+            CharTile.ghostGreen,
+            CharTile.cyclops,
+            CharTile.crab,
+            CharTile.bat,
+            CharTile.ghostWhite,
+            CharTile.spider,
+        ]
+        let atlas = SKTextureAtlas(named: "TinyDungeon")
+        // Spawn at the keep arch (row 12, col 15) and stream south-west into
+        // the village.
+        let archPosition = tilePosition(col: 15, row: 12)
+
+        for i in 0..<8 {
+            let tileID = monsterTiles.randomElement() ?? CharTile.ghostGreen
+            let tex = atlas.textureNamed(String(format: "tile_%04d", tileID))
+            tex.filteringMode = .nearest
+
+            let sprite = SKSpriteNode(texture: tex)
+            sprite.position = archPosition
+            sprite.zPosition = 12
+            sprite.alpha = 0
+            addChild(sprite)
+
+            // Spread-out target somewhere in the village.
+            let target = CGPoint(
+                x: CGFloat.random(in: 80...260),
+                y: CGFloat.random(in: 60...160)
+            )
+
+            sprite.run(SKAction.sequence([
+                SKAction.wait(forDuration: Double(i) * 0.25),
+                SKAction.fadeAlpha(to: 1.0, duration: 0.3),
+                SKAction.move(to: target, duration: 2.8),
+                SKAction.fadeOut(withDuration: 0.4),
+                SKAction.removeFromParent(),
+            ]))
+        }
+    }
+
+    private func performLoopReset() {
+        loopAttempt += 1
+        print("[Loop] Resetting → attempt \(loopAttempt)")
+
+        // Tear down any in-flight chats / dialogs / overlays.
+        dismissDialog()
+        waitingForDialogue = false
+        closeJournal()
+        #if os(iOS)
+        if playerChatActive { endPlayerChat() }
+        #endif
+
+        // Drop NPCs.
+        for npc in npcs { npc.sprite.removeFromParent() }
+        npcs = []
+
+        // Wipe LLM session memory so NPCs don't reference the prior loop.
+        Task.detached {
+            for sheet in Roster.all {
+                await NPCBrain.invalidate(npcName: sheet.name)
+            }
+        }
+
+        // Reset world clock + day.
+        gameClock = GameClock()
+        currentDay = 1
+        didReflectToday = false
+
+        // Respawn cast.
+        spawnNPCs()
+        for npc in npcs {
+            NPCBrain.warmUp(npcName: npc.name, role: npc.role, personality: npc.personality)
+        }
+
+        // Drop the player back at the well.
+        player?.teleport(to: MapLocation.townSquare)
+
+        // Snap the camera so it doesn't lerp from wherever it was.
+        if let player = player {
+            cameraNode.position = clampedCameraPosition(targeting: player.sprite.position)
+        }
+
+        // Restore daytime sky and show the loop title card. Refresh the
+        // fragment counter — its value is unchanged, but the icon may have
+        // been hidden during the catastrophe fade.
+        updateSkyOverlay()
+        updateFragmentCounter()
+        showLoopTitleCard()
+
+        catastropheActive = false
+    }
+
+    private func showLoopTitleCard() {
+        let card = SKNode()
+        card.zPosition = 400
+        card.name = "loopTitleCard"
+
+        let bg = SKShapeNode(rectOf: size)
+        bg.fillColor = .black
+        bg.strokeColor = .clear
+        card.addChild(bg)
+
+        let title = SKLabelNode(text: "Day 1")
+        title.fontName = "Menlo-Bold"
+        title.fontSize = 14
+        title.fontColor = SKColor(red: 1, green: 0.9, blue: 0.6, alpha: 1)
+        title.verticalAlignmentMode = .center
+        title.horizontalAlignmentMode = .center
+        title.position = CGPoint(x: 0, y: 6)
+        card.addChild(title)
+
+        let attempt = SKLabelNode(text: "Attempt \(loopAttempt)")
+        attempt.fontName = "Menlo"
+        attempt.fontSize = 6
+        attempt.fontColor = SKColor(white: 0.7, alpha: 1)
+        attempt.verticalAlignmentMode = .top
+        attempt.horizontalAlignmentMode = .center
+        attempt.position = CGPoint(x: 0, y: -3)
+        card.addChild(attempt)
+
+        cameraNode.addChild(card)
+
+        card.run(SKAction.sequence([
+            SKAction.wait(forDuration: 1.5),
+            SKAction.fadeOut(withDuration: 0.6),
+            SKAction.removeFromParent(),
+        ]))
+    }
+
+    // MARK: - Victory
+
+    private func triggerVictory() {
+        catastropheActive = true   // reuse the flag to freeze the world
+        print("[Victory] All four fragments — the seal holds.")
+
+        // Sky clears to a soft golden glow rather than blood-red.
+        skyOverlay.removeAllActions()
+        skyOverlay.run(SKAction.group([
+            SKAction.colorize(
+                with: SKColor(red: 1, green: 0.85, blue: 0.55, alpha: 1),
+                colorBlendFactor: 1.0,
+                duration: 2.5
+            ),
+            SKAction.fadeAlpha(to: 0.35, duration: 2.5),
+        ]))
+
+        run(SKAction.sequence([
+            SKAction.wait(forDuration: 3.0),
+            SKAction.run { [weak self] in self?.showVictoryCard() },
+        ]))
+    }
+
+    private func showVictoryCard() {
+        let card = SKNode()
+        card.zPosition = 400
+        card.name = "victoryCard"
+
+        let bg = SKShapeNode(rectOf: size)
+        bg.fillColor = SKColor(red: 0.05, green: 0.04, blue: 0.1, alpha: 0.97)
+        bg.strokeColor = .clear
+        card.addChild(bg)
+
+        let title = SKLabelNode(text: "The seal holds.")
+        title.fontName = "Menlo-Bold"
+        title.fontSize = 12
+        title.fontColor = SKColor(red: 1, green: 0.92, blue: 0.7, alpha: 1)
+        title.verticalAlignmentMode = .center
+        title.horizontalAlignmentMode = .center
+        title.position = CGPoint(x: 0, y: 18)
+        card.addChild(title)
+
+        let body = SKLabelNode(text: "The night passes quietly.\nThe village does not know it was saved.")
+        body.fontName = "Menlo"
+        body.fontSize = 6
+        body.fontColor = SKColor(white: 0.88, alpha: 1)
+        body.numberOfLines = 0
+        body.preferredMaxLayoutWidth = size.width * 0.7
+        body.verticalAlignmentMode = .center
+        body.horizontalAlignmentMode = .center
+        body.position = CGPoint(x: 0, y: -4)
+        card.addChild(body)
+
+        let footer = SKLabelNode(text: "Attempt \(loopAttempt) — you carried what was forgotten")
+        footer.fontName = "Menlo"
+        footer.fontSize = 5
+        footer.fontColor = SKColor(white: 0.55, alpha: 1)
+        footer.verticalAlignmentMode = .bottom
+        footer.horizontalAlignmentMode = .center
+        footer.position = CGPoint(x: 0, y: -size.height / 2 + 10)
+        card.addChild(footer)
+
+        cameraNode.addChild(card)
+        card.alpha = 0
+        card.run(SKAction.fadeIn(withDuration: 1.0))
     }
 
     // MARK: - Observation
@@ -450,6 +1114,8 @@ class GameScene: SKScene {
     // MARK: - Update
 
     override func update(_ currentTime: TimeInterval) {
+        if Self.debugTileSheet != nil { return }
+
         let dt: TimeInterval
         if lastUpdateTime == 0 {
             dt = 0
@@ -458,12 +1124,32 @@ class GameScene: SKScene {
         }
         lastUpdateTime = currentTime
 
+        // Camera follows the player every frame, even while the world is
+        // paused — keeps the view centered on the avatar after a chat ends.
+        if let player = player, let cam = cameraNode {
+            let target = clampedCameraPosition(targeting: player.sprite.position)
+            let lerp: CGFloat = 0.15
+            cam.position.x += (target.x - cam.position.x) * lerp
+            cam.position.y += (target.y - cam.position.y) * lerp
+
+            // Surface NPC name labels only when the player is within earshot
+            // (~2 tiles, Manhattan). Chat bubbles update independently in NPC.
+            for npc in npcs {
+                let dist = abs(npc.gridPos.col - player.gridPos.col)
+                    + abs(npc.gridPos.row - player.gridPos.row)
+                npc.setLabelVisible(dist <= 2)
+            }
+        }
+
         let isNight = gameClock.hour >= 22 || gameClock.hour < 6
-        // Night speed of 20 game-min/sec gives ~24s real-time for the
-        // 22:00 -> 06:00 stretch, comfortably matching the time it takes
-        // for reflection + intentions to land on each NPC's session.
-        // Day stays at 5 game-min/sec so the visible action paces normally.
-        gameClock.minutesPerSecond = isNight ? 20.0 : 5.0
+        // Day at 2 game-min/sec gives ~6 real-min from 06:00 to 18:00 —
+        // long enough to walk, talk to a couple of NPCs, and reach sunset.
+        // Night speeds back up so reflection lands quickly.
+        gameClock.minutesPerSecond = isNight ? 20.0 : 2.0
+
+        // While the catastrophe sequence plays, freeze world updates — it's
+        // a cutscene the player watches.
+        if catastropheActive { return }
 
         // While the player is talking with an NPC the world holds still —
         // schedules don't advance, the clock doesn't tick, no other chats
@@ -489,6 +1175,17 @@ class GameScene: SKScene {
             npc.considerWander(clock: gameClock, navGraph: navGraph)
         }
 
+        // Sunset on Day 1 — if the player has gathered all four fragments,
+        // the ritual succeeds. Otherwise the seal breaks.
+        if gameClock.day == 1 && gameClock.hour >= 18 && !catastropheActive {
+            if journal.allFour {
+                triggerVictory()
+            } else {
+                triggerCatastrophe()
+            }
+            return
+        }
+
         // Gate only the LLM-driven branches: don't kick off a new chat or daily
         // reflection while one is already in flight or while a dialog is open.
         // Clock, schedules, and movement above must keep running so the UI
@@ -502,6 +1199,44 @@ class GameScene: SKScene {
     // MARK: - Input
 
     private func handleTap(at point: CGPoint) {
+        // Catastrophe is a cutscene — ignore taps while it plays.
+        if catastropheActive { return }
+
+        // Intro card swallows the first tap and dismisses early.
+        if introCardNode != nil {
+            dismissIntroCard()
+            return
+        }
+
+        // Reset confirmation: tap inside the panel = confirm rewind, tap
+        // anywhere else = cancel.
+        if resetOverlay != nil {
+            let hits = nodes(at: point)
+            if hits.contains(where: { $0.name == "resetPanel" }) {
+                dismissResetConfirmation()
+                performLoopReset()
+            } else {
+                dismissResetConfirmation()
+            }
+            return
+        }
+
+        // Journal icon: top-right of the camera view. Hit-test first so it
+        // works whether or not other overlays are open.
+        if let icon = journalIcon {
+            let iconLocal = icon.parent?.convert(icon.position, to: self) ?? icon.position
+            if abs(point.x - iconLocal.x) <= 8 && abs(point.y - iconLocal.y) <= 8 {
+                toggleJournal()
+                return
+            }
+        }
+
+        // Journal open: tap anywhere else closes it.
+        if journalOverlay != nil {
+            closeJournal()
+            return
+        }
+
         // Player-chat: tap outside the chat bubble closes the chat. Taps
         // inside it (or on the text field, which intercepts at the view
         // layer) are ignored here.
@@ -512,15 +1247,32 @@ class GameScene: SKScene {
             return
         }
 
-        if dialogNode != nil {
+        // Inspect popup (legacy macOS path) — tap anywhere dismisses it.
+        // Live NPC-NPC chats (waitingForDialogue = true) stay open until the
+        // chat ends naturally; taps fall through to walking/etc.
+        if dialogNode != nil, !waitingForDialogue {
             dismissDialog()
-            waitingForDialogue = false
+            return
+        }
+
+        // Well shrine: tapping the well's two tiles brings up the rewind
+        // prompt. Checked before the NPC loop because the well sits on
+        // walkable plaza and an NPC nearby could absorb the tap otherwise.
+        let tapTile = gridPosition(forScenePoint: point)
+        if tapTile.col == 9 && (tapTile.row == 6 || tapTile.row == 7) {
+            showResetConfirmation()
             return
         }
 
         for npc in npcs {
             let dist = hypot(npc.sprite.position.x - point.x, npc.sprite.position.y - point.y)
             if dist < tileSize * 1.2 {
+                if npc.isChatting {
+                    // Tap on a chatting NPC reveals the live transcript.
+                    showChatLog()
+                    return
+                }
+
                 #if os(iOS)
                 startPlayerChat(with: npc)
                 #else
@@ -529,6 +1281,52 @@ class GameScene: SKScene {
                 return
             }
         }
+
+        // Empty-space tap: hide the chat log if it's visible (the player
+        // is "looking away"), then walk the avatar to the tapped tile.
+        if waitingForDialogue {
+            hideChatLog()
+        }
+        guard let player = player else { return }
+        let target = gridPosition(forScenePoint: point)
+        if let walkable = nearestWalkable(to: target) {
+            player.walkTo(walkable, navGraph: navGraph)
+        }
+    }
+
+    private func gridPosition(forScenePoint point: CGPoint) -> GridPosition {
+        let col = Int(point.x / tileSize)
+        let rowFromBottom = Int(point.y / tileSize)
+        let row = mapRows - 1 - rowFromBottom
+        return GridPosition(
+            col: max(0, min(mapColumns - 1, col)),
+            row: max(0, min(mapRows - 1, row))
+        )
+    }
+
+    private func nearestWalkable(to target: GridPosition) -> GridPosition? {
+        if navGraph.node(atGridPosition: vector_int2(Int32(target.col), Int32(target.row))) != nil {
+            return target
+        }
+        // BFS outward from the tapped tile until we find a walkable cell.
+        var queue: [GridPosition] = [target]
+        var visited: Set<Int> = [target.col * 10_000 + target.row]
+        while !queue.isEmpty {
+            let pos = queue.removeFirst()
+            for (dc, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let c = pos.col + dc
+                let r = pos.row + dr
+                if c < 0 || c >= mapColumns || r < 0 || r >= mapRows { continue }
+                let key = c * 10_000 + r
+                if visited.contains(key) { continue }
+                visited.insert(key)
+                if navGraph.node(atGridPosition: vector_int2(Int32(c), Int32(r))) != nil {
+                    return GridPosition(col: c, row: r)
+                }
+                queue.append(GridPosition(col: c, row: r))
+            }
+        }
+        return nil
     }
 
     private func chatBoxContains(_ scenePoint: CGPoint) -> Bool {
@@ -545,8 +1343,37 @@ class GameScene: SKScene {
     #endif
 
     #if os(macOS)
+    override var acceptsFirstResponder: Bool { true }
+
     override func mouseDown(with event: NSEvent) {
         handleTap(at: event.location(in: self))
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // 'J' (without modifiers) toggles the journal overlay. Other keys
+        // fall through to default handling.
+        if let chars = event.charactersIgnoringModifiers?.lowercased(), chars == "j" {
+            toggleJournal()
+        } else {
+            super.keyDown(with: event)
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard dialogNode != nil else { super.scrollWheel(with: event); return }
+        // macOS: positive deltaY = scrolling content downward (revealing
+        // content above). In our chat that means showing OLDER lines, so
+        // we increase the offset.
+        chatScrollAccumulator += event.scrollingDeltaY
+        let threshold: CGFloat = 12
+        while chatScrollAccumulator >= threshold {
+            scrollChatBy(lines: 1)
+            chatScrollAccumulator -= threshold
+        }
+        while chatScrollAccumulator <= -threshold {
+            scrollChatBy(lines: -1)
+            chatScrollAccumulator += threshold
+        }
     }
     #endif
 
@@ -603,16 +1430,22 @@ class GameScene: SKScene {
         prepareNextLine(speaker: contexts[0].name, color: participants[0].dialogueColor)
 
         let participantsRef = participants
+        // Capture this chat's dialog container — UI updates only run if it's
+        // still the active one (i.e. the player or another chat hasn't
+        // replaced it). Comparing identities prevents stale tasks from
+        // dismissing dialogs they don't own.
+        let myDialog = dialogNode
 
         Task.detached { [weak self] in
             defer {
                 Task { @MainActor [weak self] in
-                    self?.dismissDialog()
-                    self?.waitingForDialogue = false
-                    if let scene = self {
-                        for npc in participantsRef {
-                            npc.endChat(clock: scene.gameClock)
-                        }
+                    guard let self else { return }
+                    if self.dialogNode === myDialog {
+                        self.dismissDialog()
+                        self.waitingForDialogue = false
+                    }
+                    for npc in participantsRef {
+                        npc.endChat(clock: self.gameClock)
                     }
                 }
             }
@@ -646,10 +1479,11 @@ class GameScene: SKScene {
                 transcript.append((opener.name, openingLine))
 
                 await MainActor.run { [weak self] in
-                    self?.commitCurrentLine(text: openingLine)
+                    guard let self, self.dialogNode === myDialog else { return }
+                    self.commitCurrentLine(text: openingLine)
                     if turnCount > 1 {
                         let nextIdx = 1 % contexts.count
-                        self?.prepareNextLine(speaker: contexts[nextIdx].name, color: participantsRef[nextIdx].dialogueColor)
+                        self.prepareNextLine(speaker: contexts[nextIdx].name, color: participantsRef[nextIdx].dialogueColor)
                     }
                 }
 
@@ -690,10 +1524,11 @@ class GameScene: SKScene {
                     transcript.append((current.name, line))
 
                     await MainActor.run { [weak self] in
-                        self?.commitCurrentLine(text: line)
+                        guard let self, self.dialogNode === myDialog else { return }
+                        self.commitCurrentLine(text: line)
                         if !isFinal {
                             let nextIdx = (turnIndex + 1) % contexts.count
-                            self?.prepareNextLine(speaker: contexts[nextIdx].name, color: participantsRef[nextIdx].dialogueColor)
+                            self.prepareNextLine(speaker: contexts[nextIdx].name, color: participantsRef[nextIdx].dialogueColor)
                         }
                     }
                 }
@@ -753,16 +1588,18 @@ class GameScene: SKScene {
         waitingForDialogue = true
         openChatLog()
         prepareNextLine(speaker: speakerName, color: speakerColor)
+        let myDialog = dialogNode
 
         Task.detached { [weak self, weak speaker, weak listener] in
             defer {
                 Task { @MainActor [weak self, weak speaker, weak listener] in
-                    self?.dismissDialog()
-                    self?.waitingForDialogue = false
-                    if let self {
-                        speaker?.endChat(clock: self.gameClock)
-                        listener?.endChat(clock: self.gameClock)
+                    guard let self else { return }
+                    if self.dialogNode === myDialog {
+                        self.dismissDialog()
+                        self.waitingForDialogue = false
                     }
+                    speaker?.endChat(clock: self.gameClock)
+                    listener?.endChat(clock: self.gameClock)
                 }
             }
 
@@ -789,9 +1626,10 @@ class GameScene: SKScene {
                 var transcript: [(speaker: String, line: String)] = [(speakerName, openingLine)]
 
                 await MainActor.run { [weak self] in
-                    self?.commitCurrentLine(text: openingLine)
+                    guard let self, self.dialogNode === myDialog else { return }
+                    self.commitCurrentLine(text: openingLine)
                     if turnCount > 1 {
-                        self?.prepareNextLine(speaker: listenerName, color: listenerColor)
+                        self.prepareNextLine(speaker: listenerName, color: listenerColor)
                     }
                 }
 
@@ -842,9 +1680,10 @@ class GameScene: SKScene {
                     transcript.append((responderName, line))
 
                     await MainActor.run { [weak self] in
-                        self?.commitCurrentLine(text: line)
+                        guard let self, self.dialogNode === myDialog else { return }
+                        self.commitCurrentLine(text: line)
                         if !isFinal {
-                            self?.prepareNextLine(speaker: nextResponderName, color: nextResponderColor)
+                            self.prepareNextLine(speaker: nextResponderName, color: nextResponderColor)
                         }
                     }
                 }
@@ -897,21 +1736,61 @@ class GameScene: SKScene {
 
         let container = SKNode()
         container.zPosition = 200
+        container.alpha = 0
 
         let boxWidth = size.width - chatBoxMargin * 2
-        let bg = SKShapeNode(rect: CGRect(x: 0, y: 0, width: boxWidth, height: chatPadding * 2),
+        let boxHeight = size.height * chatPanelHeightFraction
+
+        let bg = SKShapeNode(rect: CGRect(x: 0, y: 0, width: boxWidth, height: boxHeight),
                              cornerRadius: 2)
         bg.fillColor = SKColor(red: 0.08, green: 0.08, blue: 0.18, alpha: 0.95)
         bg.strokeColor = SKColor(red: 0.45, green: 0.5, blue: 0.7, alpha: 1)
         bg.lineWidth = 1
         container.addChild(bg)
 
-        container.position = CGPoint(x: chatBoxMargin, y: chatBoxMargin)
-        addChild(container)
+        // Input bar stripe at the bottom of the panel — the UITextField
+        // overlays this rect in view-space.
+        let inputBar = SKShapeNode(rect: CGRect(
+            x: chatPadding,
+            y: chatPadding,
+            width: boxWidth - chatPadding * 2,
+            height: chatInputBarHeight
+        ), cornerRadius: 1)
+        inputBar.fillColor = SKColor(red: 0.04, green: 0.04, blue: 0.10, alpha: 1)
+        inputBar.strokeColor = SKColor(red: 0.3, green: 0.35, blue: 0.5, alpha: 0.6)
+        inputBar.lineWidth = 0.5
+        container.addChild(inputBar)
+
+        // Divider above the input bar.
+        let dividerY = chatPadding + chatInputBarHeight + chatDividerGap
+        let dividerPath = CGMutablePath()
+        dividerPath.move(to: CGPoint(x: chatPadding, y: dividerY))
+        dividerPath.addLine(to: CGPoint(x: boxWidth - chatPadding, y: dividerY))
+        let divider = SKShapeNode(path: dividerPath)
+        divider.strokeColor = SKColor(red: 0.3, green: 0.35, blue: 0.5, alpha: 0.45)
+        divider.lineWidth = 0.5
+        container.addChild(divider)
+
+        container.position = CGPoint(
+            x: -size.width / 2 + chatBoxMargin,
+            y: -size.height / 2 + chatBoxMargin
+        )
+        cameraNode.addChild(container)
         dialogNode = container
         chatBackground = bg
         chatLines = []
         currentThinkingLabel = nil
+        chatScrollOffset = 0
+        chatStickyToBottom = true
+        chatScrollAccumulator = 0
+    }
+
+    private func showChatLog() {
+        dialogNode?.alpha = 1
+    }
+
+    private func hideChatLog() {
+        dialogNode?.alpha = 0
     }
 
     /// Append a "Speaker: ..." placeholder line that animates the thinking dots
@@ -931,6 +1810,13 @@ class GameScene: SKScene {
         container.addChild(label)
         chatLines.append(label)
         currentThinkingLabel = label
+
+        // If the user has scrolled up to read history, bump the offset so
+        // their visible window stays anchored on the same older lines
+        // instead of jumping when a new line arrives.
+        if !chatStickyToBottom {
+            chatScrollOffset += 1
+        }
 
         let dot1 = "\(speaker): ."
         let dot2 = "\(speaker): .."
@@ -962,29 +1848,66 @@ class GameScene: SKScene {
         relayoutChatLog()
     }
 
-    /// Stack lines top-to-bottom inside the box and resize the background
-    /// to fit. Layout is recomputed any time text changes (and thus heights).
+    /// Stack visible lines from the bottom of the content area upward,
+    /// starting at `chatScrollOffset` from the newest. Lines outside the
+    /// visible window are hidden (alpha=0). Panel height is fixed so the
+    /// play area never shifts.
     private func relayoutChatLog() {
-        guard dialogNode != nil, let bg = chatBackground else { return }
-        let boxWidth = size.width - chatBoxMargin * 2
+        guard dialogNode != nil, chatBackground != nil else { return }
+        let boxHeight = size.height * chatPanelHeightFraction
+        let contentBottomY = chatPadding + chatInputBarHeight + chatDividerGap + chatPadding
+        let contentTopY = boxHeight - chatPadding
+        let contentMaxHeight = contentTopY - contentBottomY
 
         var heights: [CGFloat] = []
-        var totalHeight: CGFloat = chatPadding
         for label in chatLines {
-            let h = max(label.frame.height, chatFontSize)
-            heights.append(h)
-            totalHeight += h + chatLineSpacing
-        }
-        totalHeight += chatPadding - chatLineSpacing
-
-        for (i, label) in chatLines.enumerated() {
-            var yFromTop = chatPadding
-            for prior in heights.prefix(i) { yFromTop += prior + chatLineSpacing }
-            label.position = CGPoint(x: chatPadding, y: totalHeight - yFromTop)
+            heights.append(max(label.frame.height, chatFontSize))
         }
 
-        bg.path = CGPath(roundedRect: CGRect(x: 0, y: 0, width: boxWidth, height: totalHeight),
-                         cornerWidth: 2, cornerHeight: 2, transform: nil)
+        // Clamp the offset against the bottom of the list. We can't scroll
+        // past having only the oldest line in view, so the cap is count-1.
+        let maxOffset = max(0, chatLines.count - 1)
+        if chatScrollOffset > maxOffset { chatScrollOffset = maxOffset }
+        if chatScrollOffset < 0 { chatScrollOffset = 0 }
+
+        // Walk backwards from (newest - offset), keeping lines until overflow.
+        let startIdx = chatLines.count - 1 - chatScrollOffset
+        var firstVisibleIdx = startIdx + 1
+        var stacked: CGFloat = 0
+        if startIdx >= 0 {
+            for i in stride(from: startIdx, through: 0, by: -1) {
+                let extra = heights[i] + (i < startIdx ? chatLineSpacing : 0)
+                if stacked + extra > contentMaxHeight { break }
+                stacked += extra
+                firstVisibleIdx = i
+            }
+        }
+
+        // Lay out visible labels from bottom (newest-visible) up; hide the rest.
+        var nextBottom = contentBottomY
+        for i in stride(from: chatLines.count - 1, through: 0, by: -1) {
+            let label = chatLines[i]
+            if i >= firstVisibleIdx && i <= startIdx {
+                label.alpha = 1
+                label.position = CGPoint(x: chatPadding, y: nextBottom + heights[i])
+                nextBottom += heights[i] + chatLineSpacing
+            } else {
+                label.alpha = 0
+            }
+        }
+    }
+
+    /// Move the chat view by `lineDelta` lines. Positive = older, negative =
+    /// newer. Flips the sticky flag so future messages know whether to keep
+    /// the view pinned to the bottom or hold the user's current position.
+    private func scrollChatBy(lines lineDelta: Int) {
+        guard !chatLines.isEmpty else { return }
+        let maxOffset = max(0, chatLines.count - 1)
+        let newOffset = max(0, min(maxOffset, chatScrollOffset + lineDelta))
+        if newOffset == chatScrollOffset { return }
+        chatScrollOffset = newOffset
+        chatStickyToBottom = (newOffset == 0)
+        relayoutChatLog()
     }
 
     // MARK: - Dialog
@@ -1099,7 +2022,16 @@ class GameScene: SKScene {
 
     #if os(iOS)
     private func startPlayerChat(with npc: NPC) {
-        guard !playerChatActive, !waitingForDialogue, dialogNode == nil else { return }
+        guard !playerChatActive else { return }
+        // If an NPC-NPC chat was running, end its participants cleanly so
+        // they're not stuck in "Chatting" forever; the chat task itself
+        // notices `playerChatActive` and skips its UI callbacks.
+        if waitingForDialogue {
+            for n in npcs where n.isChatting {
+                n.endChat(clock: gameClock)
+            }
+            waitingForDialogue = false
+        }
         playerChatActive = true
         playerChatNPC = npc
         playerChatTranscript = []
@@ -1108,6 +2040,7 @@ class GameScene: SKScene {
         playerChatNPCActivityDuration = npc.activityDurationDescription(currentMinutes: gameClock.totalMinutes)
         npc.beginPlayerChat(clock: gameClock)
         openChatLog()
+        showChatLog()
         installPlayerInputField()
     }
 
@@ -1127,19 +2060,31 @@ class GameScene: SKScene {
     private func installPlayerInputField() {
         guard let view = self.view else { return }
 
+        // Pan gesture for scrolling chat history. Lives on the SKView so
+        // drags anywhere over the chat panel scroll the log.
+        let panTarget = ChatPanTarget { [weak self] dy, ended in
+            self?.handleChatPanDelta(dy: dy, ended: ended)
+        }
+        let pan = UIPanGestureRecognizer(target: panTarget, action: #selector(ChatPanTarget.onPan(_:)))
+        pan.maximumNumberOfTouches = 1
+        view.addGestureRecognizer(pan)
+        chatPanTarget = panTarget
+        chatPanGesture = pan
+
         let field = UITextField(frame: .zero)
-        field.borderStyle = .roundedRect
-        field.placeholder = "Say something…"
+        field.borderStyle = .none
         field.returnKeyType = .send
         field.autocapitalizationType = .sentences
-        field.font = UIFont(name: "Menlo", size: 14) ?? .systemFont(ofSize: 14)
-        field.backgroundColor = UIColor(white: 0.08, alpha: 0.95)
         field.textColor = .white
         field.tintColor = .white
+        field.backgroundColor = .clear
         field.attributedPlaceholder = NSAttributedString(
             string: "Say something…",
-            attributes: [.foregroundColor: UIColor(white: 0.6, alpha: 1)]
+            attributes: [.foregroundColor: UIColor(white: 0.55, alpha: 1)]
         )
+        let leftPad = UIView(frame: CGRect(x: 0, y: 0, width: 8, height: 1))
+        field.leftView = leftPad
+        field.leftViewMode = .always
 
         let delegate = PlayerInputDelegate { [weak self] text in
             self?.submitPlayerMessage(text: text)
@@ -1158,16 +2103,59 @@ class GameScene: SKScene {
         playerInputField?.removeFromSuperview()
         playerInputField = nil
         playerInputDelegate = nil
+        if let pan = chatPanGesture {
+            self.view?.removeGestureRecognizer(pan)
+        }
+        chatPanGesture = nil
+        chatPanTarget = nil
     }
 
+    /// Convert a pan delta (in view points) into discrete chat scroll lines.
+    /// Pulls down on the panel = reveal older content above (offset++).
+    private func handleChatPanDelta(dy: CGFloat, ended: Bool) {
+        chatScrollAccumulator += dy
+        let threshold: CGFloat = 18
+        while chatScrollAccumulator >= threshold {
+            scrollChatBy(lines: 1)
+            chatScrollAccumulator -= threshold
+        }
+        while chatScrollAccumulator <= -threshold {
+            scrollChatBy(lines: -1)
+            chatScrollAccumulator += threshold
+        }
+        if ended { chatScrollAccumulator = 0 }
+    }
+
+    /// Anchor the UITextField to the input-bar stripe inside the chat panel
+    /// (which lives in scene-space). Convert the panel's input-bar rect into
+    /// view coords so the text field tracks the panel's screen footprint.
     private func positionPlayerInputField() {
-        guard let view = self.view, let field = playerInputField else { return }
-        let margin: CGFloat = 12
-        let height: CGFloat = 36
-        let width = view.bounds.width - margin * 2
-        // Keep the field high enough to clear the keyboard on most devices.
-        let y = view.bounds.height * 0.45
-        field.frame = CGRect(x: margin, y: y, width: width, height: height)
+        guard let view = self.view, let field = playerInputField,
+              let container = dialogNode else { return }
+        let panelWidth = size.width - chatBoxMargin * 2
+
+        let topLeftLocal = CGPoint(
+            x: chatPadding,
+            y: chatPadding + chatInputBarHeight
+        )
+        let bottomRightLocal = CGPoint(
+            x: panelWidth - chatPadding,
+            y: chatPadding
+        )
+        let topLeftScene = container.convert(topLeftLocal, to: self)
+        let bottomRightScene = container.convert(bottomRightLocal, to: self)
+        let topLeftView = convertPoint(toView: topLeftScene)
+        let bottomRightView = convertPoint(toView: bottomRightScene)
+
+        let frame = CGRect(
+            x: topLeftView.x,
+            y: min(topLeftView.y, bottomRightView.y),
+            width: bottomRightView.x - topLeftView.x,
+            height: abs(bottomRightView.y - topLeftView.y)
+        )
+        field.frame = frame
+        let fontPx = max(8, frame.height * 0.35)
+        field.font = UIFont(name: "Menlo", size: fontPx) ?? .systemFont(ofSize: fontPx)
     }
 
     override func didChangeSize(_ oldSize: CGSize) {
@@ -1197,9 +2185,14 @@ class GameScene: SKScene {
         let observations = npc.memory.recentObservations()
         let intentions = npc.intentions
         let history = playerChatTranscript
+        let fragment = npc.sheet.fragment
+        let unlockConditions = npc.sheet.unlockConditions
+        let dodgesTopics = npc.sheet.dodgesTopics
+        let alreadyRevealed = journal.unlockedNames.contains(npcName)
+        let day = currentDay
 
         Task.detached { [weak self, weak npc] in
-            let reply = await NPCBrain.respondToPlayer(
+            let response = await NPCBrain.respondToPlayer(
                 npcName: npcName,
                 role: npcRole,
                 personality: npcPersonality,
@@ -1210,19 +2203,35 @@ class GameScene: SKScene {
                 npcActivityDuration: activityDuration,
                 npcObservations: observations,
                 npcIntentions: intentions,
+                fragment: fragment,
+                unlockConditions: unlockConditions,
+                dodgesTopics: dodgesTopics,
+                fragmentAlreadyRevealed: alreadyRevealed,
                 playerMessage: trimmed,
                 chatHistory: history
-            ) ?? "..."
+            )
+            let line = response?.line ?? "..."
+            // Trust fragmentRevealed only if the NPC actually holds a
+            // fragment and hasn't been logged before.
+            let revealed = (response?.fragmentRevealed ?? false) && fragment != nil && !alreadyRevealed
 
             await MainActor.run { [weak self, weak npc] in
                 guard let self else { return }
-                self.commitCurrentLine(text: reply)
-                self.playerChatTranscript.append("\(npcName): \"\(reply)\"")
+                self.commitCurrentLine(text: line)
+                self.playerChatTranscript.append("\(npcName): \"\(line)\"")
                 self.playerChatNPCThinking = false
+                if revealed, let fragment {
+                    self.journal.record(JournalEntry(
+                        npcName: npcName,
+                        fragment: fragment,
+                        unlockedAtDay: day
+                    ))
+                    self.updateFragmentCounter()
+                }
                 if let npc {
                     let timeStr = self.gameClock.timeString
                     npc.memory.logDialogue(speaker: "Visitor", partner: "Visitor", line: trimmed, at: timeStr)
-                    npc.memory.logDialogue(speaker: npcName, partner: "Visitor", line: reply, at: timeStr)
+                    npc.memory.logDialogue(speaker: npcName, partner: "Visitor", line: line, at: timeStr)
                 }
             }
         }
@@ -1243,6 +2252,35 @@ private final class PlayerInputDelegate: NSObject, UITextFieldDelegate {
         textField.text = ""
         onSubmit(text)
         return false
+    }
+}
+
+/// Bridges UIPanGestureRecognizer's @objc requirement to a Swift closure on
+/// the scene. Reports incremental dy deltas; resets between drags.
+private final class ChatPanTarget: NSObject {
+    let onDelta: (CGFloat, Bool) -> Void
+    private var lastTranslationY: CGFloat = 0
+
+    init(onDelta: @escaping (CGFloat, Bool) -> Void) {
+        self.onDelta = onDelta
+    }
+
+    @objc func onPan(_ gesture: UIPanGestureRecognizer) {
+        guard let view = gesture.view else { return }
+        let t = gesture.translation(in: view).y
+        switch gesture.state {
+        case .began:
+            lastTranslationY = 0
+        case .changed:
+            let dy = t - lastTranslationY
+            lastTranslationY = t
+            onDelta(dy, false)
+        case .ended, .cancelled, .failed:
+            lastTranslationY = 0
+            onDelta(0, true)
+        default:
+            break
+        }
     }
 }
 #endif

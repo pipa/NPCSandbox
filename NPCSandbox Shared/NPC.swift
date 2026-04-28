@@ -10,8 +10,11 @@ enum MapLocation {
     static let bakeryDoor = GridPosition(col: 7, row: 4)
     static let tavernDoor = GridPosition(col: 11, row: 4)
     static let farmhouseDoor = GridPosition(col: 7, row: 11)
-    static let farmField = GridPosition(col: 14, row: 10)
-    static let townSquare = GridPosition(col: 9, row: 7)
+    static let farmField = GridPosition(col: 10, row: 12)
+    static let townSquare = GridPosition(col: 9, row: 8)
+    static let keepGate = GridPosition(col: 15, row: 13)
+    static let cronesCottage = GridPosition(col: 3, row: 17)
+    static let strangerCamp = GridPosition(col: 24, row: 17)
 
     private static let named: [(String, GridPosition)] = [
         ("Bakery", bakeryDoor),
@@ -19,6 +22,9 @@ enum MapLocation {
         ("Farmhouse", farmhouseDoor),
         ("Farm Field", farmField),
         ("Town Square", townSquare),
+        ("Old Keep", keepGate),
+        ("Hilda's Cottage", cronesCottage),
+        ("Stranger's Camp", strangerCamp),
     ]
 
     static func nearestName(to pos: GridPosition) -> String {
@@ -45,6 +51,7 @@ struct ScheduleEntry {
 }
 
 class NPC {
+    let sheet: Lifesheet
     let name: String
     let role: String
     /// Distinctive voice notes injected into the model's Instructions. Concrete
@@ -53,6 +60,7 @@ class NPC {
     let personality: String
     let sprite: SKSpriteNode
     let label: SKLabelNode
+    let bubble: SKShapeNode
     let memory: MemoryStream
     let sociability: Double
     let dialogueColor: SKColor
@@ -189,42 +197,104 @@ class NPC {
     private let wanderIntervalMinutes = 8
     private let slackBeforeWanderMinutes = 5
 
-    init(name: String, role: String, personality: String, tileID: Int, startPos: GridPosition,
-         schedule: [ScheduleEntry], sociability: Double, dialogueColor: SKColor,
-         tileSize: CGFloat, mapRows: Int) {
-        self.name = name
-        self.role = role
-        self.personality = personality
-        self.gridPos = startPos
-        self.schedule = schedule.sorted { $0.totalMinutes < $1.totalMinutes }
-        self.sociability = sociability
-        self.dialogueColor = dialogueColor
+    init(sheet: Lifesheet, tileSize: CGFloat, mapRows: Int) {
+        self.sheet = sheet
+        self.name = sheet.name
+        self.role = sheet.role
+        self.personality = sheet.personality
+        self.gridPos = sheet.startPos
+        self.schedule = sheet.schedule.sorted { $0.totalMinutes < $1.totalMinutes }
+        self.sociability = sheet.sociability
+        self.dialogueColor = sheet.dialogueColor
         self.tileSize = tileSize
         self.mapRows = mapRows
-        self.memory = MemoryStream(ownerName: name)
+        self.memory = MemoryStream(ownerName: sheet.name)
 
         let atlas = SKTextureAtlas(named: "TinyDungeon")
-        let texName = String(format: "tile_%04d", tileID)
+        let texName = String(format: "tile_%04d", sheet.spawnTileID)
         let tex = atlas.textureNamed(texName)
         tex.filteringMode = .nearest
 
         let startPoint = CGPoint(
-            x: CGFloat(startPos.col) * tileSize + tileSize / 2,
-            y: CGFloat(mapRows - 1 - startPos.row) * tileSize + tileSize / 2
+            x: CGFloat(sheet.startPos.col) * tileSize + tileSize / 2,
+            y: CGFloat(mapRows - 1 - sheet.startPos.row) * tileSize + tileSize / 2
         )
 
         sprite = SKSpriteNode(texture: tex)
         sprite.position = startPoint
         sprite.zPosition = 10
 
-        label = SKLabelNode(text: name)
+        label = SKLabelNode(text: sheet.name)
         label.fontSize = 5
-        label.fontColor = dialogueColor
+        label.fontColor = sheet.dialogueColor
         label.fontName = "Menlo-Bold"
         label.verticalAlignmentMode = .bottom
         label.position = CGPoint(x: 0, y: tileSize * 0.65)
         label.zPosition = 60  // above sky tint
+        label.alpha = 0       // hidden by default; surfaces on player proximity
         sprite.addChild(label)
+
+        // Speech-bubble indicator that appears above the head when this NPC
+        // is in a conversation. Visible regardless of player proximity so the
+        // player can spot active chats from across the village.
+        let bubbleNode = SKShapeNode(
+            rectOf: CGSize(width: 14, height: 8),
+            cornerRadius: 2
+        )
+        bubbleNode.fillColor = SKColor(red: 1.0, green: 1.0, blue: 0.96, alpha: 0.95)
+        bubbleNode.strokeColor = SKColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1)
+        bubbleNode.lineWidth = 0.5
+        bubbleNode.position = CGPoint(x: 0, y: tileSize * 1.05)
+        bubbleNode.zPosition = 60
+        bubbleNode.alpha = 0
+
+        // Small triangular tail pointing down at the NPC's head.
+        let tail = SKShapeNode()
+        let tailPath = CGMutablePath()
+        tailPath.move(to: CGPoint(x: -1.5, y: -3.5))
+        tailPath.addLine(to: CGPoint(x: 1.5, y: -3.5))
+        tailPath.addLine(to: CGPoint(x: 0, y: -5.5))
+        tailPath.closeSubpath()
+        tail.path = tailPath
+        tail.fillColor = bubbleNode.fillColor
+        tail.strokeColor = bubbleNode.strokeColor
+        tail.lineWidth = 0.5
+        tail.zPosition = -1
+        bubbleNode.addChild(tail)
+
+        // Three dots that fade in sequentially to suggest active dialogue.
+        let dotColor = SKColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1)
+        for (i, x) in [-3.5, 0, 3.5].enumerated() {
+            let dot = SKShapeNode(circleOfRadius: 0.8)
+            dot.fillColor = dotColor
+            dot.strokeColor = .clear
+            dot.position = CGPoint(x: x, y: 0)
+            dot.alpha = 0.2
+            let pulse = SKAction.sequence([
+                SKAction.wait(forDuration: 0.3 * Double(i)),
+                SKAction.repeatForever(SKAction.sequence([
+                    SKAction.fadeAlpha(to: 1.0, duration: 0.25),
+                    SKAction.wait(forDuration: 0.6),
+                    SKAction.fadeAlpha(to: 0.2, duration: 0.25),
+                    SKAction.wait(forDuration: 0.2),
+                ])),
+            ])
+            dot.run(pulse)
+            bubbleNode.addChild(dot)
+        }
+
+        self.bubble = bubbleNode
+        sprite.addChild(bubbleNode)
+    }
+
+    var isChatting: Bool {
+        currentActivity == "Chatting" || currentActivity == "Talking"
+    }
+
+    /// Show or hide the floating name label. Called by the scene each frame
+    /// based on the player's distance to this NPC.
+    func setLabelVisible(_ visible: Bool) {
+        label.alpha = visible ? 1 : 0
     }
 
     // MARK: - Day Reset
@@ -458,7 +528,10 @@ class NPC {
     }
 
     private func updateLabel() {
-        label.text = currentActivity.isEmpty ? name : "\(name): \(currentActivity)"
+        // Floating label only ever shows the name — live activity surfaces
+        // through the chat bubble instead.
+        label.text = name
+        bubble.alpha = isChatting ? 1 : 0
     }
 
     // MARK: - Movement

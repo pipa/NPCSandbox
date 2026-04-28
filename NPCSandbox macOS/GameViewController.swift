@@ -21,9 +21,19 @@ class GameViewController: NSViewController {
         skView.presentScene(scene)
         
         skView.ignoresSiblingOrder = true
-        
+
         skView.showsFPS = true
         skView.showsNodeCount = true
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // Route keyDown to the scene so its overrides fire (e.g. J to toggle
+        // the journal). viewDidLoad's window is nil; this is the first hook
+        // where it's safe to assign first responder.
+        if let scene = (view as? SKView)?.scene {
+            view.window?.makeFirstResponder(scene)
+        }
     }
 
 }
